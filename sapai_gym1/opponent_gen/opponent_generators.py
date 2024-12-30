@@ -1,7 +1,7 @@
 from sapai import Player, Team
 
-from sapai_gym.ai import baselines
-from sapai_gym import SuperAutoPetsEnv
+from sapai_gym1.ai import baselines
+from sapai_gym1 import SuperAutoPetsEnv
 
 # TODO : Wrap the ai to create a generator
 
@@ -25,6 +25,7 @@ def opp_generator(num_turns, ai):
         _do_store_phase(env, ai)
         opps.append(Team.from_state(env.player.team.state))
     return opps
+
 
 
 def random_opp_generator(num_turns):

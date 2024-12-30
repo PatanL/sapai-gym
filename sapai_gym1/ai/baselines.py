@@ -38,7 +38,7 @@ def _get_action_str(action):
 def _map_buy_pet_action_to_shop_pet(player_to_act: Player, action):
     shop_index = action[1]
     assert isinstance(shop_index, int)
-    return player_to_act.shop[shop_index].item
+    return player_to_act.shop[shop_index].obj
 
 
 def _map_sell_pet_action_to_team_pet(player_to_act: Player, action):
@@ -84,7 +84,7 @@ def _get_buy_food_action_front(player_to_act: Player, actions: Dict[int, any]) -
     buy_food_actions = _filter_by_action_name(actions, ["buy_food"])
     if len(buy_food_actions) >= 1:
         # Remove sleeping pill from choices
-        buy_food_actions_no_pill = {index: action for index, action in buy_food_actions.items() if player_to_act.shop[action[1]].item.name != "food-sleeping-pill"}
+        buy_food_actions_no_pill = {index: action for index, action in buy_food_actions.items() if player_to_act.shop[action[1]].obj.name != "food-sleeping-pill"}
         if len(buy_food_actions_no_pill) >= 1:
             feed_front_actions = _feed_front_pet_actions(player_to_act, buy_food_actions_no_pill)
             return choice(list(feed_front_actions.items()))
@@ -96,7 +96,7 @@ def _get_buy_food_action_everyone(player_to_act: Player, actions: Dict[int, any]
     buy_food_actions = _filter_by_action_name(actions, ["buy_food"])
     if len(buy_food_actions) >= 1:
         # Remove sleeping pill from choices
-        buy_food_actions_no_pill = {index: action for index, action in buy_food_actions.items() if player_to_act.shop[action[1]].item.name != "food-sleeping-pill"}
+        buy_food_actions_no_pill = {index: action for index, action in buy_food_actions.items() if player_to_act.shop[action[1]].obj.name != "food-sleeping-pill"}
         if len(buy_food_actions_no_pill) >= 1:
             return choice(list(buy_food_actions_no_pill.items()))
     return None
