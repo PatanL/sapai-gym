@@ -876,6 +876,9 @@ class SuperAutoPetsEnv(gym.Env):
         :return: Agent's reward.
         """
         reward_agent = self.agent.wins / 7 + self.bad_action_reward_sum_agent
+    
+        if self.opponent.lives <= 0:
+            reward_agent += 1
         return reward_agent
 
     def _avail_end_turn(self, agent_idx: int):
