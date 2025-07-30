@@ -180,7 +180,7 @@ if __name__ == "__main__":
         model = MaskablePPO(
             "MlpPolicy",
             train_env,
-            policy_kwargs=policy_kwargs
+            policy_kwargs=policy_kwargs,
             verbose=1,
             tensorboard_log="./maskableppo_tensorboard/",
             n_steps=2048,
@@ -191,7 +191,7 @@ if __name__ == "__main__":
         model = MaskablePPO(
             "MlpPolicy",
             train_env,
-            policy_kwargs=policy_kwargs
+            policy_kwargs=policy_kwargs,
             verbose=1,
             tensorboard_log="./maskableppo_tensorboard/",
             n_steps=2048,
