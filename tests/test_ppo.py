@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     CHECKPOINT_DIR = "/kaggle/working/sap-ppo-checkpoints/"
 
-    CHECKPOINT_PATH = "/kaggle/working/sap-ppo-checkpoints/sap_model_100000_steps.zip" 
+    CHECKPOINT_PATH = "/kaggle/working/sap-ppo-checkpoints/maskableppo_superautopets.zip" 
 
     # ——— training env (parallel) ———
     # train_env = make_vec_env(
