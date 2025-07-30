@@ -16,6 +16,61 @@ from sb3_contrib.common.maskable.utils import get_action_masks
 
 # train_maskableppo_superautopets.py
 
+class AddToOpponentPoolCallback(BaseCallback):
+    def __init__(self, save_freq: int, verbose=0):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.save_freq == 0:
+            # Create a new opponent model architecture. It's lightweight.
+            # SB3 requires an env to initialize, so we get it from the model.
+            opponent_model = MaskablePPO(
+                policy=self.model.policy.__class__,
+                env=self.model.get_env(),
+                policy_kwargs=self.model.policy_kwargs,  # mirror keyword args
+                verbose=0
+            )
+            
+            # Copy the weights from the current model to the new opponent model
+            opponent_model.policy.load_state_dict(self.model.policy.state_dict())
+            
+            # Get the actual environment instance (assuming DummyVecEnv or a single env)
+            # Add to every sub-env in the VecEnv
+            # for env in self.training_env.envs:
+            #     env.add_opponent(opponent_model)
+            self.training_env.env_method("add_opponent", opponent_model)
+
+            if self.verbose > 0:
+                print(f"Cloned current policy and added to opponent pool at timestep {self.num_timesteps}.")
+        
+        return True
+
+class RewardAnnealingCallback(BaseCallback):
+    """
+    A callback to anneal the scale of shaped rewards over the course of training.
+    """
+    def __init__(self, total_timesteps: int, annealing_end_fraction: float = 0.8, verbose: int = 0):
+        super().__init__(verbose)
+        self.total_timesteps = total_timesteps
+        # Calculate the timestep at which annealing should finish
+        self.annealing_end_step = int(total_timesteps * annealing_end_fraction)
+
+    def _on_step(self) -> bool:
+        # Calculate the current progress of annealing (from 0.0 to 1.0)
+        progress = min(1.0, self.num_timesteps / self.annealing_end_step)
+        
+        # Linear decay from 1.0 down to 0.0
+        new_scale = max(0.0, 1.0 - progress)
+        
+        # Update the shaping_scale in each environment
+        self.training_env.env_method("set_shaping_scale", new_scale)
+
+        # Log the scale to TensorBoard to monitor it
+        self.logger.record("custom/reward_shaping_scale", new_scale)
+        
+        return True
+
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -83,62 +138,6 @@ if __name__ == "__main__":
     train_env.close()
     eval_env.close()
 
-
-
-# class AddToOpponentPoolCallback(BaseCallback):
-#     def __init__(self, save_freq: int, verbose=0):
-#         super().__init__(verbose)
-#         self.save_freq = save_freq
-
-#     def _on_step(self) -> bool:
-#         if self.num_timesteps % self.save_freq == 0:
-#             # Create a new opponent model architecture. It's lightweight.
-#             # SB3 requires an env to initialize, so we get it from the model.
-#             opponent_model = MaskablePPO(
-#                 policy=self.model.policy.__class__,
-#                 env=self.model.get_env(),
-#                 policy_kwargs=self.model.policy_kwargs,  # mirror keyword args
-#                 verbose=0
-#             )
-            
-#             # Copy the weights from the current model to the new opponent model
-#             opponent_model.policy.load_state_dict(self.model.policy.state_dict())
-            
-#             # Get the actual environment instance (assuming DummyVecEnv or a single env)
-#             # Add to every sub-env in the VecEnv
-#             # for env in self.training_env.envs:
-#             #     env.add_opponent(opponent_model)
-#             self.training_env.env_method("add_opponent", opponent_model)
-
-#             if self.verbose > 0:
-#                 print(f"Cloned current policy and added to opponent pool at timestep {self.num_timesteps}.")
-        
-#         return True
-
-# class RewardAnnealingCallback(BaseCallback):
-#     """
-#     A callback to anneal the scale of shaped rewards over the course of training.
-#     """
-#     def __init__(self, total_timesteps: int, annealing_end_fraction: float = 0.8, verbose: int = 0):
-#         super().__init__(verbose)
-#         self.total_timesteps = total_timesteps
-#         # Calculate the timestep at which annealing should finish
-#         self.annealing_end_step = int(total_timesteps * annealing_end_fraction)
-
-#     def _on_step(self) -> bool:
-#         # Calculate the current progress of annealing (from 0.0 to 1.0)
-#         progress = min(1.0, self.num_timesteps / self.annealing_end_step)
-        
-#         # Linear decay from 1.0 down to 0.0
-#         new_scale = max(0.0, 1.0 - progress)
-        
-#         # Update the shaping_scale in each environment
-#         self.training_env.env_method("set_shaping_scale", new_scale)
-
-#         # Log the scale to TensorBoard to monitor it
-#         self.logger.record("custom/reward_shaping_scale", new_scale)
-        
-#         return True
 
 
 # def make_env():
