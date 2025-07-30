@@ -16,6 +16,34 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.utils import get_action_masks
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
+# Define the number of action types (buy, sell, roll, etc.)
+self.ACTION_TYPES = {
+    "END_TURN": 0,
+    "BUY_PET": 1,
+    "BUY_FOOD": 2,
+    "BUY_COMBINE": 3,
+    "COMBINE": 4,
+    "SELL": 5,
+    "ROLL": 6,
+    "REORDER": 7,
+    # Potentially add FREEZE here if you implement it
+}
+
+# The number of discrete action types
+num_action_types = len(self.ACTION_TYPES)
+
+# The action space is now a dictionary
+self.action_space = spaces.Dict({
+    # The agent first chooses an action type
+    "action_type": spaces.Discrete(num_action_types),
+
+    # Then it chooses the first parameter (e.g., a shop slot or first team pet)
+    # The size should be the max possible number of slots. 7 for shop, 5 for team. Let's use 7.
+    "param1": spaces.Discrete(7),
+
+    # And the second parameter (e.g., a team slot)
+    "param2": spaces.Discrete(5)
+})
 
 class SuperAutoPetsEnv(gym.Env):
     """
@@ -104,38 +132,11 @@ class SuperAutoPetsEnv(gym.Env):
         total_obs_size = len_obs_space * 2  # For both agent and opponent
 
         # self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(total_obs_size,), dtype=np.float32)
-        # Calculate feature vector size for one pet and one food
-        pet_feature_size = len(self.ALL_PETS) + 2 + len(self.ALL_STATUSES) # name, stats, status
-        food_feature_size = len(self.ALL_FOODS) + 1 # name, cost
-
-        # Calculate size for one player's full state (team, shop, stats)
-        agent_state_size = (pet_feature_size * self.MAX_TEAM_PETS) + \
-                        (pet_feature_size * self.MAX_SHOP_PETS) + \
-                        (food_feature_size * self.MAX_SHOP_FOODS) + \
-                        5 # Agent stats
-                        
-        # Calculate size for opponent's partial state (team, stats)
-        opponent_state_size = (pet_feature_size * self.MAX_TEAM_PETS) + \
-                            3 # Opponent stats
-
-        total_obs_size = agent_state_size + opponent_state_size
-        print("total_obs_size: ", total_obs_size)
-
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(1660,), dtype=np.float32)
         self.reward_range = (-1.0, 1.0)
 
         self.valid_actions_only = valid_actions_only
         self.manual_battles = manual_battles
-
-        # Create encoders once and reuse them
-        self.pet_encoder = OneHotEncoder(categories=[self.ALL_PETS], sparse_output=False, handle_unknown='ignore')
-        self.food_encoder = OneHotEncoder(categories=[self.ALL_FOODS], sparse_output=False, handle_unknown='ignore')
-        self.status_encoder = OneHotEncoder(categories=[self.ALL_STATUSES], sparse_output=False, handle_unknown='ignore')
-
-        # Pre-fit the encoders with all possible values. This is key.
-        self.pet_encoder.fit(np.array(self.ALL_PETS).reshape(-1, 1))
-        self.food_encoder.fit(np.array(self.ALL_FOODS).reshape(-1, 1))
-        self.status_encoder.fit(np.array(self.ALL_STATUSES).reshape(-1, 1))
 
         # Initialize the single agent and the opponent
         self.agent = Player()
@@ -179,16 +180,6 @@ class SuperAutoPetsEnv(gym.Env):
 
         self.reorder_count_opponent = 0
         self.allow_additional_reorder_opponent = False
-
-        self._agent_actions_cache = None
-        self._opponent_actions_cache = None
-
-        # variables for reward shaping and annealing
-        self.agent_max_team_stats = 0
-        self.shaping_scale = 1.0  # Starts at full strength
-        self.step_reward = 0.0    # For immediate rewards like buying food
-
-
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         """
@@ -252,18 +243,8 @@ class SuperAutoPetsEnv(gym.Env):
         self.previous_opponent_state = None
         self.previous_agent_state = None
 
-        # Clear the avail_actions cache on reset
-        self._agent_actions_cache = None
-        self._opponent_actions_cache = None
-
-        self.agent_max_team_stats = 0
-        self.step_reward = 0.0
-
-
         # Store the initial agent state as previous_agent_state for the opponent
-        # self.previous_agent_state = copy.deepcopy(self.agent.team)
-        # Instead of: self.previous_agent_state = copy.deepcopy(self.agent.team)
-        self.previous_agent_state_dict = self.agent.team.state # Store the dictionary state
+        self.previous_agent_state = copy.deepcopy(self.agent.team)
 
         # Generate initial observation
         obs = self._encode_state()
@@ -286,10 +267,7 @@ class SuperAutoPetsEnv(gym.Env):
             return obs, 0.0, self.done, False, info
 
         # Store Agent's Previous State before taking the action
-        # self.previous_agent_state = copy.deepcopy(self.agent.team)
-        # Instead of: self.previous_agent_state = copy.deepcopy(self.agent.team)
-        self.previous_agent_state_dict = self.agent.team.state
-
+        self.previous_agent_state = copy.deepcopy(self.agent.team)
 
         # Resolve the agent's action
         agent_action_name = self.resolve_action(agent_idx=0, action=action)
@@ -316,9 +294,7 @@ class SuperAutoPetsEnv(gym.Env):
         # Execute battle phase if both have ended their turns
         if self.agent.turn_ended and self.opponent.turn_ended and not self.manual_battles:
             # Store the current opponent state before the battle
-            # self.previous_opponent_state = copy.deepcopy(self.opponent.team)
-            # Instead of: self.previous_opponent_state = copy.deepcopy(self.opponent.team)
-            self.previous_opponent_state_dict = self.opponent.team.state
+            self.previous_opponent_state = copy.deepcopy(self.opponent.team)
 
             # Conduct the battle
             battle_result = Battle(self.agent.team, self.opponent.team).battle()
@@ -376,26 +352,17 @@ class SuperAutoPetsEnv(gym.Env):
                 self.bad_action_reward_sum_opponent += self.BAD_ACTION_PENALTY
             return
 
-        # start executing the action
+        # Execute the action
         action_name = self._get_action_name(action_to_play).split(".")[-1]
+        action_method = getattr(player, action_name)
+        action_method(*action_to_play[1:])
 
-         # logic for steak and melon reward
+        # logic for steak and melon reward
         if agent_idx == 0 and action_name == "buy_food":
             shop_idx = action_to_play[1]
             food_name = player.shop[shop_idx].obj.name
             if food_name in ["food-melon", "food-steak"]:
                 self.step_reward += 0.1 * self.shaping_scale
-
-        # finish executing action
-        action_method = getattr(player, action_name)
-        action_method(*action_to_play[1:])
-
-        
-        # Invalidate the cache for the agent that just acted
-        if agent_idx == 0:
-            self._agent_actions_cache = None
-        else:
-            self._opponent_actions_cache = None
 
         # Track last actions for the agent
         if agent_idx == 0:
@@ -472,33 +439,11 @@ class SuperAutoPetsEnv(gym.Env):
         
         :return: Agent's reward.
         """
-
-        # Start with any immediate rewards collected during the step
-        reward = self.step_reward
-        self.step_reward = 0.0
-
-        if self.agent.lf_winner is True and self.opponent.lf_winner is False:
-            reward += 0.1  # Won the battle
-
-        
-        # Proportional reward for achieving a new "high score" in team stats
-        current_team_stats = sum(p.pet.attack + p.pet.health for p in self.agent.team if not p.empty)
-        
-        if current_team_stats > self.agent_max_team_stats:
-            increase = current_team_stats - self.agent_max_team_stats
-            # Apply the annealed, proportional reward
-            reward += (increase * 0.005) * self.shaping_scale 
-            self.agent_max_team_stats = current_team_stats
+        reward_agent = self.agent.wins / 7 + self.bad_action_reward_sum_agent
     
         if self.opponent.lives <= 0:
-            reward += 2.0
-        
-        if self.agent.lives <= 0:
-            reward -= 2.0
-        
-        reward += self.bad_action_reward_sum_agent
-
-        return reward
+            reward_agent += 1
+        return reward_agent
 
     def _avail_end_turn(self, agent_idx: int):
         """
@@ -728,12 +673,6 @@ class SuperAutoPetsEnv(gym.Env):
         :param agent_idx: Index of the agent (0 for agent, 1 for opponent).
         :return: Dictionary mapping action numbers to action tuples.
         """
-        # Check the cache first
-        if agent_idx == 0 and self._agent_actions_cache is not None:
-            return self._agent_actions_cache
-        if agent_idx == 1 and self._opponent_actions_cache is not None:
-            return self._opponent_actions_cache
-
         end_turn_actions = self._avail_end_turn(agent_idx)
         buy_pet_actions = self._avail_buy_pets(agent_idx)
         buy_food_actions = self._avail_buy_foods(agent_idx)
@@ -747,11 +686,6 @@ class SuperAutoPetsEnv(gym.Env):
         all_avail_actions = {**end_turn_actions, **buy_pet_actions, **buy_food_actions,
                              **buy_combine_actions, **team_combine_actions,
                              **sell_actions, **roll_actions, **reorder_actions}
-
-        if agent_idx == 0:
-            self._agent_actions_cache = all_avail_actions
-        else:
-            self._opponent_actions_cache = all_avail_actions
 
         # Validate action uniqueness
         total_action_len = len(end_turn_actions) + len(buy_pet_actions) + len(buy_food_actions) + \
@@ -788,86 +722,44 @@ class SuperAutoPetsEnv(gym.Env):
         # return [masks_agent, masks_opponent]
         return masks_agent
 
-    # def _encode_pets(self, pets: List[Pet]) -> List[np.ndarray]:
-    #     """
-    #     One-hot encode the list of pets.
-        
-    #     :param pets: List of Pet objects.
-    #     :return: List of encoded pet arrays.
-    #     """
-    #     arrays_to_concat = []
-    #     for pet in pets:
-    #         if pet.name == "pet-none":
-    #             arrays_to_concat.append(np.zeros(len(self.ALL_PETS)))
-    #             arrays_to_concat.append(np.zeros(2))  # Placeholder for attack and health, change to -> arrays_to_concat.append(np.zeros((2,)))
-    #             arrays_to_concat.append(np.zeros(len(self.ALL_STATUSES)))
-    #         else:
-    #             arrays_to_concat.append(self._encode_single(pet.name, self.ALL_PETS))
-    #             arrays_to_concat.append(np.array([pet.attack / 50, pet.health / 50]))
-    #             if pet.status == "none":
-    #                 arrays_to_concat.append(np.zeros(len(self.ALL_STATUSES))) # -> arrays_to_concat.append(np.zeros((len(self.ALL_STATUSES),)))
-    #             else:
-    #                 arrays_to_concat.append(self._encode_single(pet.status, self.ALL_STATUSES))
-    #     return arrays_to_concat
     def _encode_pets(self, pets: List[Pet]) -> List[np.ndarray]:
         """
         One-hot encode the list of pets.
-        ...
+        
+        :param pets: List of Pet objects.
+        :return: List of encoded pet arrays.
         """
         arrays_to_concat = []
         for pet in pets:
             if pet.name == "pet-none":
                 arrays_to_concat.append(np.zeros(len(self.ALL_PETS)))
-                arrays_to_concat.append(np.zeros(2))
+                arrays_to_concat.append(np.zeros(2))  # Placeholder for attack and health, change to -> arrays_to_concat.append(np.zeros((2,)))
                 arrays_to_concat.append(np.zeros(len(self.ALL_STATUSES)))
             else:
-                # Use the pre-fitted pet_encoder
-                encoded_pet = self.pet_encoder.transform(np.array([[pet.name]]))[0]
-                arrays_to_concat.append(encoded_pet)
-
+                arrays_to_concat.append(self._encode_single(pet.name, self.ALL_PETS))
                 arrays_to_concat.append(np.array([pet.attack / 50, pet.health / 50]))
                 if pet.status == "none":
-                    arrays_to_concat.append(np.zeros(len(self.ALL_STATUSES)))
+                    arrays_to_concat.append(np.zeros(len(self.ALL_STATUSES))) # -> arrays_to_concat.append(np.zeros((len(self.ALL_STATUSES),)))
                 else:
-                    # Use the pre-fitted status_encoder
-                    encoded_status = self.status_encoder.transform(np.array([[pet.status]]))[0]
-                    arrays_to_concat.append(encoded_status)
+                    arrays_to_concat.append(self._encode_single(pet.status, self.ALL_STATUSES))
         return arrays_to_concat
 
-    # def _encode_foods(self, foods: List[tuple]) -> List[np.ndarray]:
-    #     """
-    #     One-hot encode the list of foods.
-        
-    #     :param foods: List of tuples containing Food objects and their costs.
-    #     :return: List of encoded food arrays.
-    #     """
-    #     arrays_to_concat = []
-    #     for food_tuple in foods:
-    #         (food, cost) = food_tuple
-    #         if food.name == "food-none":
-    #             arrays_to_concat.append(np.zeros(len(self.ALL_FOODS)))
-    #             arrays_to_concat.append(np.zeros(1))  # Placeholder for cost, change to arrays_to_concat.append(np.zeros((1,)))
-    #         else:
-    #             arrays_to_concat.append(self._encode_single(food.name, self.ALL_FOODS))
-    #             arrays_to_concat.append(np.array([cost / 3]))  # Normalize cost (assuming max cost is 3)
-    #     return arrays_to_concat
     def _encode_foods(self, foods: List[tuple]) -> List[np.ndarray]:
         """
         One-hot encode the list of foods.
-        ...
+        
+        :param foods: List of tuples containing Food objects and their costs.
+        :return: List of encoded food arrays.
         """
         arrays_to_concat = []
         for food_tuple in foods:
             (food, cost) = food_tuple
             if food.name == "food-none":
                 arrays_to_concat.append(np.zeros(len(self.ALL_FOODS)))
-                arrays_to_concat.append(np.zeros(1))
+                arrays_to_concat.append(np.zeros(1))  # Placeholder for cost, change to arrays_to_concat.append(np.zeros((1,)))
             else:
-                # Use the pre-fitted food_encoder
-                encoded_food = self.food_encoder.transform(np.array([[food.name]]))[0]
-                arrays_to_concat.append(encoded_food)
-                
-                arrays_to_concat.append(np.array([cost / 3]))
+                arrays_to_concat.append(self._encode_single(food.name, self.ALL_FOODS))
+                arrays_to_concat.append(np.array([cost / 3]))  # Normalize cost (assuming max cost is 3)
         return arrays_to_concat
 
     # def _get_shop_foods(self, agent_idx: int) -> List[tuple]:
@@ -961,6 +853,7 @@ class SuperAutoPetsEnv(gym.Env):
 
             # Convert to float32
             final_state = combined_state.astype(np.float32)
+
 
             return final_state
 
@@ -1135,11 +1028,9 @@ class SuperAutoPetsEnv(gym.Env):
             lives_normalized,
             turn_normalized
         ])
+    
     def set_shaping_scale(self, scale: float):
         """
         This method allows a callback to update the annealing scale for shaped rewards.
         """
         self.shaping_scale = scale
-
-
-
