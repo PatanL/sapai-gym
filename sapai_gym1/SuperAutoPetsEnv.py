@@ -40,7 +40,7 @@ class SuperAutoPetsEnv(gym.Env):
         "reorder": 65,
     }
     MAX_TURN = 25
-    BAD_ACTION_PENALTY = -0.1
+    BAD_ACTION_PENALTY = -0.5
     MAX_TEAM_PETS = 5
     MAX_SHOP_PETS = 6
     MAX_SHOP_FOODS = 3
@@ -528,28 +528,47 @@ class SuperAutoPetsEnv(gym.Env):
         action_dict[action_num] = (self.agent.end_turn,) if agent_idx == 0 else (self.opponent.end_turn,)
         return action_dict
 
-    def _avail_buy_pets(self, agent_idx: int):
-        """
-        Get available 'buy_pet' actions for the specified agent.
+    # def _avail_buy_pets(self, agent_idx: int):
+    #     """
+    #     Get available 'buy_pet' actions for the specified agent.
         
-        :param agent_idx: Index of the agent (0 for agent, 1 for opponent).
-        :return: Dictionary of available 'buy_pet' actions.
-        """
+    #     :param agent_idx: Index of the agent (0 for agent, 1 for opponent).
+    #     :return: Dictionary of available 'buy_pet' actions.
+    #     """
+    #     action_dict = {}
+    #     player = self.agent if agent_idx == 0 else self.opponent
+    #     shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
+    #     team = self.team_agent if agent_idx == 0 else self.team_opponent
+
+    #     if len(player.team) >= self.MAX_TEAM_PETS:
+    #         return action_dict  # Cannot buy if team is full
+
+    #     pet_index = 0
+    #     for shop_idx, shop_slot in enumerate(player.shop):
+    #         if shop_slot.slot_type == "pet":
+    #             if shop_slot.cost <= player.gold:
+    #                 action_num = self.ACTION_BASE_NUM["buy_pet"] + pet_index
+    #                 action_dict[action_num] = (player.buy_pet, shop_idx)
+    #             pet_index += 1
+    #     return action_dict
+    def _avail_buy_pets(self, agent_idx: int):
         action_dict = {}
         player = self.agent if agent_idx == 0 else self.opponent
-        shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
-        team = self.team_agent if agent_idx == 0 else self.team_opponent
 
         if len(player.team) >= self.MAX_TEAM_PETS:
-            return action_dict  # Cannot buy if team is full
+            return action_dict
 
-        pet_index = 0
-        for shop_idx, shop_slot in enumerate(player.shop):
-            if shop_slot.slot_type == "pet":
-                if shop_slot.cost <= player.gold:
-                    action_num = self.ACTION_BASE_NUM["buy_pet"] + pet_index
-                    action_dict[action_num] = (player.buy_pet, shop_idx)
-                pet_index += 1
+        # 1. Filter for only the pet slots that are actually available for purchase.
+        available_pet_slots = [
+            (shop_idx, shop_slot) for shop_idx, shop_slot in enumerate(player.shop)
+            if shop_slot.slot_type == "pet" and shop_slot.cost <= player.gold
+        ]
+
+        # 2. Iterate over the filtered list to create the actions.
+        for pet_index, (shop_idx, shop_slot) in enumerate(available_pet_slots):
+            action_num = self.ACTION_BASE_NUM["buy_pet"] + pet_index
+            action_dict[action_num] = (player.buy_pet, shop_idx)
+                
         return action_dict
 
     # def _avail_buy_foods(self, agent_idx: int):
@@ -620,37 +639,64 @@ class SuperAutoPetsEnv(gym.Env):
                 
         return action_dict
     
+    # def _avail_buy_combine(self, agent_idx: int):
+    #     action_dict = {}
+    #     player = self.agent if agent_idx == 0 else self.opponent
+    #     shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
+    #     team = self.team_agent if agent_idx == 0 else self.team_opponent    
+
+    #     team_names = {}
+    #     if len(player.team) == 0:
+    #         return action_dict
+
+    #     # Find pet names on team
+    #     for team_idx, slot in enumerate(player.team):
+    #         if slot.empty:
+    #             continue
+    #         if slot.pet.name not in team_names:
+    #             team_names[slot.pet.name] = []
+    #         team_names[slot.pet.name].append(team_idx)
+
+    #     # Search through pets in the shop
+    #     shop_pet_index = 0
+    #     for shop_idx, shop_slot in enumerate(player.shop):
+    #         if shop_slot.slot_type == "pet":
+    #             # Can't combine if pet not already on team
+    #             if shop_slot.obj.name not in team_names:
+    #                 continue
+
+    #             if shop_slot.cost <= player.gold:
+    #                 for team_idx in team_names[shop_slot.obj.name]:
+    #                     action_num = self.ACTION_BASE_NUM["buy_combine"] + (shop_pet_index * self.MAX_TEAM_PETS) + team_idx
+    #                     action_dict[action_num] = (player.buy_combine, shop_idx, team_idx)
+    #             shop_pet_index += 1
+
+    #     return action_dict
     def _avail_buy_combine(self, agent_idx: int):
         action_dict = {}
         player = self.agent if agent_idx == 0 else self.opponent
-        shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
-        team = self.team_agent if agent_idx == 0 else self.team_opponent    
 
-        team_names = {}
         if len(player.team) == 0:
             return action_dict
 
-        # Find pet names on team
-        for team_idx, slot in enumerate(player.team):
-            if slot.empty:
-                continue
-            if slot.pet.name not in team_names:
-                team_names[slot.pet.name] = []
-            team_names[slot.pet.name].append(team_idx)
+        # Create a lookup for pets on the team for efficient checking
+        team_pet_names = {slot.pet.name for slot in player.team if not slot.empty}
 
-        # Search through pets in the shop
-        shop_pet_index = 0
-        for shop_idx, shop_slot in enumerate(player.shop):
-            if shop_slot.slot_type == "pet":
-                # Can't combine if pet not already on team
-                if shop_slot.obj.name not in team_names:
-                    continue
+        # 1. Filter for only the shop pets that are valid for combining.
+        available_combine_slots = [
+            (shop_idx, shop_slot) for shop_idx, shop_slot in enumerate(player.shop)
+            if (shop_slot.slot_type == "pet" and
+                shop_slot.cost <= player.gold and
+                shop_slot.obj.name in team_pet_names)
+        ]
 
-                if shop_slot.cost <= player.gold:
-                    for team_idx in team_names[shop_slot.obj.name]:
-                        action_num = self.ACTION_BASE_NUM["buy_combine"] + (shop_pet_index * self.MAX_TEAM_PETS) + team_idx
-                        action_dict[action_num] = (player.buy_combine, shop_idx, team_idx)
-                shop_pet_index += 1
+        # 2. Iterate over the filtered list to create actions.
+        for shop_pet_index, (shop_idx, shop_slot) in enumerate(available_combine_slots):
+            # Find all team pets that can be combined with this shop pet
+            for team_idx, team_slot in enumerate(player.team):
+                if not team_slot.empty and team_slot.pet.name == shop_slot.obj.name:
+                    action_num = self.ACTION_BASE_NUM["buy_combine"] + (shop_pet_index * self.MAX_TEAM_PETS) + team_idx
+                    action_dict[action_num] = (player.buy_combine, shop_idx, team_idx)
 
         return action_dict
 
