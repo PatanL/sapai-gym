@@ -552,33 +552,72 @@ class SuperAutoPetsEnv(gym.Env):
                 pet_index += 1
         return action_dict
 
+    # def _avail_buy_foods(self, agent_idx: int):
+    #     action_dict = dict()
+    #     action_dict = {}
+    #     player = self.agent if agent_idx == 0 else self.opponent
+    #     shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
+    #     team = self.team_agent if agent_idx == 0 else self.team_opponent
+
+    #     if len(player.team) == 0:
+    #         return action_dict
+
+    #     food_index = 0
+    #     for shop_idx, shop_slot in enumerate(player.shop):
+    #         if shop_slot.slot_type == "food":
+    #             if shop_slot.cost <= player.gold:
+    #                 # Multi-foods (eg. salad, sushi, etc.)
+    #                 food_effect = data["foods"][shop_slot.obj.name]["ability"]["effect"]
+    #                 if shop_slot.obj.name == "food-canned-food" or ("target" in food_effect and "kind" in food_effect["target"] and food_effect["target"]["kind"] == "RandomFriend"):
+    #                     action_num = self.ACTION_BASE_NUM["buy_food_team"] + food_index
+    #                     action_dict[action_num] = (player.buy_food, shop_idx)
+    #                 else:
+    #                     # Single target foods (eg. apple, melon)
+    #                     for team_idx, team_slot in enumerate(player.team):
+    #                         if team_slot.empty:
+    #                             continue
+    #                         action_num = self.ACTION_BASE_NUM["buy_food"] + (food_index * self.MAX_TEAM_PETS) + team_idx
+    #                         action_dict[action_num] = (player.buy_food, shop_idx, team_idx)
+    #             food_index += 1
+    #     return action_dict
     def _avail_buy_foods(self, agent_idx: int):
-        action_dict = dict()
+        """
+        Generates available actions for buying food from the shop.
+        This version correctly separates the food-specific index from the shop's global index.
+        """
         action_dict = {}
         player = self.agent if agent_idx == 0 else self.opponent
-        shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
-        team = self.team_agent if agent_idx == 0 else self.team_opponent
 
         if len(player.team) == 0:
             return action_dict
 
-        food_index = 0
-        for shop_idx, shop_slot in enumerate(player.shop):
-            if shop_slot.slot_type == "food":
-                if shop_slot.cost <= player.gold:
-                    # Multi-foods (eg. salad, sushi, etc.)
-                    food_effect = data["foods"][shop_slot.obj.name]["ability"]["effect"]
-                    if shop_slot.obj.name == "food-canned-food" or ("target" in food_effect and "kind" in food_effect["target"] and food_effect["target"]["kind"] == "RandomFriend"):
-                        action_num = self.ACTION_BASE_NUM["buy_food_team"] + food_index
-                        action_dict[action_num] = (player.buy_food, shop_idx)
-                    else:
-                        # Single target foods (eg. apple, melon)
-                        for team_idx, team_slot in enumerate(player.team):
-                            if team_slot.empty:
-                                continue
-                            action_num = self.ACTION_BASE_NUM["buy_food"] + (food_index * self.MAX_TEAM_PETS) + team_idx
-                            action_dict[action_num] = (player.buy_food, shop_idx, team_idx)
-                food_index += 1
+        # 1. First, create a list of all food slots that are actually available for purchase.
+        #    We store both the original shop index (shop_idx) and the slot object.
+        available_food_slots = [
+            (shop_idx, shop_slot) for shop_idx, shop_slot in enumerate(player.shop)
+            if shop_slot.slot_type == "food" and shop_slot.cost <= player.gold
+        ]
+
+        # 2. Now, iterate over this filtered list. `food_index` will be the correct 0, 1, 2...
+        for food_index, (shop_idx, shop_slot) in enumerate(available_food_slots):
+            food_effect = data["foods"][shop_slot.obj.name]["ability"]["effect"]
+
+            # Handle team-wide foods (like Canned Food)
+            if shop_slot.obj.name == "food-canned-food" or \
+            ("target" in food_effect and food_effect["target"].get("kind") == "RandomFriend"):
+                
+                action_num = self.ACTION_BASE_NUM["buy_food_team"] + food_index
+                # The action tuple uses the original `shop_idx` for the game engine.
+                action_dict[action_num] = (player.buy_food, shop_idx)
+            else:
+                # Handle targeted foods (like Apple)
+                for team_idx, team_slot in enumerate(player.team):
+                    if not team_slot.empty:
+                        # The action number uses the clean `food_index`.
+                        action_num = self.ACTION_BASE_NUM["buy_food"] + (food_index * self.MAX_TEAM_PETS) + team_idx
+                        # The action tuple uses the original `shop_idx`.
+                        action_dict[action_num] = (player.buy_food, shop_idx, team_idx)
+                
         return action_dict
     
     def _avail_buy_combine(self, agent_idx: int):
