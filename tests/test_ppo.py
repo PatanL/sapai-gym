@@ -46,15 +46,15 @@ class AddToOpponentPoolCallback(BaseCallback):
                 policy_class,
                 policy_kwargs
             )
-            opponent_model = MaskablePPO(
-                policy=self.model.policy.__class__,
-                env=self.model.get_env(),
-                policy_kwargs=self.model.policy_kwargs,  # mirror keyword args
-                verbose=0
-            )
+            # opponent_model = MaskablePPO(
+            #     policy=self.model.policy.__class__,
+            #     env=self.model.get_env(),
+            #     policy_kwargs=self.model.policy_kwargs,  # mirror keyword args
+            #     verbose=0
+            # )
             
-            # Copy the weights from the current model to the new opponent model
-            opponent_model.policy.load_state_dict(self.model.policy.state_dict())
+            # # Copy the weights from the current model to the new opponent model
+            # opponent_model.policy.load_state_dict(self.model.policy.state_dict())
             
             # Get the actual environment instance (assuming DummyVecEnv or a single env)
             # Add to every sub-env in the VecEnv
