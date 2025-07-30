@@ -153,6 +153,9 @@ if __name__ == "__main__":
                                                 annealing_end_fraction=0.8)
 
     # ——— model & train ———
+    policy_kwargs = dict(
+        net_arch=[256, 256, 256] # Three hidden layers with 256 neurons each
+    )
     if os.path.exists(CHECKPOINT_PATH):
         print(f"--- Resuming training from checkpoint: {CHECKPOINT_PATH} ---")
         # The model will load its weights, optimizer, timesteps, etc.
@@ -177,6 +180,7 @@ if __name__ == "__main__":
         model = MaskablePPO(
             "MlpPolicy",
             train_env,
+            policy_kwargs=policy_kwargs
             verbose=1,
             tensorboard_log="./maskableppo_tensorboard/",
             n_steps=2048,
@@ -187,6 +191,7 @@ if __name__ == "__main__":
         model = MaskablePPO(
             "MlpPolicy",
             train_env,
+            policy_kwargs=policy_kwargs
             verbose=1,
             tensorboard_log="./maskableppo_tensorboard/",
             n_steps=2048,
