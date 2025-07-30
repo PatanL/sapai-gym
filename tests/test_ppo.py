@@ -27,7 +27,8 @@ from stable_baselines3.common.callbacks import EvalCallback
 
 import functools
 
-def make_env(valid_actions_only: bool = True, seed: int = 0):
+def make_env(valid_actions_only: bool = True):
+    """Utility function to create and wrap a single environment."""
     env = SuperAutoPetsEnv(valid_actions_only=valid_actions_only, manual_battles=False)
     env = Monitor(env)
     return env
@@ -100,7 +101,7 @@ class RewardAnnealingCallback(BaseCallback):
         return True
 
 if __name__ == "__main__":
-    num_cpu = 2
+    num_cpu = 1
     TOTAL_TIMESTEPS = 500_000
     seed = 42
 
@@ -112,20 +113,22 @@ if __name__ == "__main__":
     #     vec_env_cls=SubprocVecEnv,
     #     env_kwargs=dict(valid_actions_only=False, manual_battles=False) 
     # )
-    train_env_fns = [
-        functools.partial(make_env, valid_actions_only=False)
-        for _ in range(num_cpu)
-    ]
-    train_env = SubprocVecEnv(train_env_fns)
-    train_env.seed(seed)
+    # train_env_fns = [
+    #     functools.partial(make_env, valid_actions_only=False)
+    #     for _ in range(num_cpu)
+    # ]
+    # train_env = SubprocVecEnv(train_env_fns)
+    train_env = DummyVecEnv([lambda: make_env(valid_actions_only=False)])
+    # train_env.seed(seed)
 
     # ——— eval env (single) ———
-    eval_env = make_vec_env(
-        env_id=SuperAutoPetsEnv,
-        n_envs=1, # Typically only need 1 env for evaluation
-        vec_env_cls=DummyVecEnv,
-        env_kwargs=dict(valid_actions_only=True, manual_battles=False)
-    )
+    # eval_env = make_vec_env(
+    #     env_id=SuperAutoPetsEnv,
+    #     n_envs=1, # Typically only need 1 env for evaluation
+    #     vec_env_cls=DummyVecEnv,
+    #     env_kwargs=dict(valid_actions_only=True, manual_battles=False)
+    # )
+    eval_env = DummyVecEnv([lambda: make_env(valid_actions_only=True)])
 
     # ——— eval callback ———
     # eval_freq here is in *vectorized* steps, so dividing by num_cpu
