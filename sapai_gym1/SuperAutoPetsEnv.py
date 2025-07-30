@@ -419,17 +419,33 @@ class SuperAutoPetsEnv(gym.Env):
 
         return action_name
 
-    def add_opponent(self, opponent_model: MaskablePPO):
+    def add_opponent_from_state(self, policy_state_dict, policy_class, policy_kwargs):
         """
-        Add a new opponent to the opponent pool.
+        Recreates an opponent model from its weights and adds it to the pool.
+        This method is designed to be called via `env_method` from a callback,
+        avoiding the need to pickle an entire model object.
+        """
+        # 1. Create a new model instance. Since this is running inside the
+        #    environment's process, it's safe to pass `self` as the env.
+        opponent_model = MaskablePPO(
+            policy=policy_class,
+            env=self,
+            policy_kwargs=policy_kwargs,
+        )
         
-        :param opponent_model: A trained PPO model to be used as an opponent.
-        """
-        if len(self.opponent_pool) >= self.max_opponents:
-            removed_opponent = self.opponent_pool.pop(0)  # Remove the oldest opponent
-            # print(f"Removed oldest opponent from the pool.")
-        self.opponent_pool.append(opponent_model)
-        # print(f"Added new opponent to the pool. Pool size is now {len(self.opponent_pool)}.")
+        # 2. Load the weights that were sent from the main process.
+        opponent_model.policy.load_state_dict(policy_state_dict)
+        
+        # 3. Add the fully-reconstructed opponent model to this env's pool.
+        self.add_opponent(opponent_model)
+
+def add_opponent(self, opponent_model: MaskablePPO):
+    """
+    Adds a new opponent to this environment's opponent pool.
+    """
+    if len(self.opponent_pool) >= self.max_opponents:
+        self.opponent_pool.pop(0)  # Remove the oldest opponent
+    self.opponent_pool.append(opponent_model)
 
     def get_opponent_action(self):
         """

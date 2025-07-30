@@ -34,6 +34,17 @@ class AddToOpponentPoolCallback(BaseCallback):
         if self.num_timesteps % self.save_freq == 0:
             # Create a new opponent model architecture. It's lightweight.
             # SB3 requires an env to initialize, so we get it from the model.
+            policy_state_dict = self.model.policy.state_dict()
+
+            policy_class = self.model.policy.__class__
+            policy_kwargs = self.model.policy_kwargs
+
+            self.training_env.env_method(
+                "add_opponent_from_state",
+                policy_state_dict,
+                policy_class,
+                policy_kwargs
+            )
             opponent_model = MaskablePPO(
                 policy=self.model.policy.__class__,
                 env=self.model.get_env(),
@@ -48,7 +59,7 @@ class AddToOpponentPoolCallback(BaseCallback):
             # Add to every sub-env in the VecEnv
             # for env in self.training_env.envs:
             #     env.add_opponent(opponent_model)
-            self.training_env.env_method("add_opponent", opponent_model)
+            # self.training_env.env_method("add_opponent", opponent_model)
 
             if self.verbose > 0:
                 print(f"Cloned current policy and added to opponent pool at timestep {self.num_timesteps}.")
