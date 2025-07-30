@@ -105,6 +105,10 @@ if __name__ == "__main__":
     TOTAL_TIMESTEPS = 500_000
     seed = 42
 
+    CHECKPOINT_DIR = "/kaggle/working/sap-ppo-checkpoints/"
+
+    CHECKPOINT_PATH = "/kaggle/working/sap-ppo-checkpoints/sap_model_100000_steps.zip" 
+
     # ——— training env (parallel) ———
     # train_env = make_vec_env(
     #     env_id=SuperAutoPetsEnv,                  # Pass the class itself
@@ -149,15 +153,30 @@ if __name__ == "__main__":
                                                 annealing_end_fraction=0.8)
 
     # ——— model & train ———
-    model = MaskablePPO(
-        "MlpPolicy",
-        train_env,
-        verbose=1,
-        tensorboard_log="./maskableppo_tensorboard/",
-        n_steps=2048,
-        batch_size=64,
-        gamma=0.99,
-    )
+    if os.path.exists(CHECKPOINT_PATH):
+        print(f"--- Resuming training from checkpoint: {CHECKPOINT_PATH} ---")
+        # The model will load its weights, optimizer, timesteps, etc.
+        # You MUST pass the custom_objects if you have custom policies or layers
+        # and you MUST pass the environment.
+        model = MaskablePPO.load(
+            CHECKPOINT_PATH,
+            env=train_env,
+            # If you want to change the learning rate, you can do so here:
+            # learning_rate=1e-5, 
+            tensorboard_log="./maskableppo_tensorboard/"
+        )
+        train_env.env_method("add_opponent_from_path", CHECKPOINT_PATH)
+    else:
+        print(f"--- Resuming training from checkpoint: {CHECKPOINT_PATH} ---")
+        model = MaskablePPO(
+            "MlpPolicy",
+            train_env,
+            verbose=1,
+            tensorboard_log="./maskableppo_tensorboard/",
+            n_steps=2048,
+            batch_size=64,
+            gamma=0.99,
+        )
     model.learn(
         total_timesteps=500_000,
         callback=[add_opponent_cb, eval_callback, reward_anneal_cb],

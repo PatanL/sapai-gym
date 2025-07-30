@@ -459,8 +459,9 @@ class SuperAutoPetsEnv(gym.Env):
 
         # Opponent's observation includes its current state and the agent's previous state
         opponent_obs = self._encode_state(agent_idx=1)  # Encode opponent's observation including agent's previous state
-        action_mask = self.info.get('action_mask', None)
-        opponent_action, _states = self.current_opponent_model.predict(opponent_obs, action_masks=action_mask, deterministic=True)
+        # action_mask = self.info.get('action_mask', None)
+        opponent_action_mask = self._generate_action_mask(agent_idx=1)
+        opponent_action, _states = self.current_opponent_model.predict(opponent_obs, action_masks=opponent_action_mask, deterministic=True)
         return opponent_action
 
     def default_opponent_action(self):
@@ -473,6 +474,22 @@ class SuperAutoPetsEnv(gym.Env):
         if not available_actions:
             return self.ACTION_BASE_NUM["end_turn"]
         return np.random.choice(available_actions)
+    
+    def add_opponent_from_path(self, model_path: str):
+        """
+        Loads a MaskablePPO model from a file path and adds it to the pool.
+        This is safe to call via `env_method` as it only passes a string.
+        """
+        try:
+            # We need an env to load the model; it's safe to use `self`.
+            # No device needs to be specified; it will auto-detect.
+            opponent_model = MaskablePPO.load(model_path, env=self)
+            self.add_opponent(opponent_model)
+        except Exception as e:
+            # This can happen if the file doesn't exist or is corrupted.
+            # It's better to log this than to crash the worker process.
+            print(f"Warning: Could not load opponent model from {model_path}. Error: {e}")
+
 
     def is_done(self):
         """
