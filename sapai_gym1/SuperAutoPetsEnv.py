@@ -439,13 +439,13 @@ class SuperAutoPetsEnv(gym.Env):
         # 3. Add the fully-reconstructed opponent model to this env's pool.
         self.add_opponent(opponent_model)
 
-def add_opponent(self, opponent_model: MaskablePPO):
-    """
-    Adds a new opponent to this environment's opponent pool.
-    """
-    if len(self.opponent_pool) >= self.max_opponents:
-        self.opponent_pool.pop(0)  # Remove the oldest opponent
-    self.opponent_pool.append(opponent_model)
+    def add_opponent(self, opponent_model: MaskablePPO):
+        """
+        Adds a new opponent to this environment's opponent pool.
+        """
+        if len(self.opponent_pool) >= self.max_opponents:
+            self.opponent_pool.pop(0)  # Remove the oldest opponent
+        self.opponent_pool.append(opponent_model)
 
     def get_opponent_action(self):
         """
