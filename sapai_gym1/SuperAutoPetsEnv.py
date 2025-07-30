@@ -119,7 +119,7 @@ class SuperAutoPetsEnv(gym.Env):
                             3 # Opponent stats
 
         total_obs_size = agent_state_size + opponent_state_size
-        print("total_obs_size: ", total_obs_size)
+        # print("total_obs_size: ", total_obs_size)
 
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(1660,), dtype=np.float32)
         self.reward_range = (-1.0, 1.0)
@@ -243,10 +243,10 @@ class SuperAutoPetsEnv(gym.Env):
         # Select a consistent opponent for this game from the opponent pool
         if self.opponent_pool:
             self.current_opponent_model = self.rs_random.choice(self.opponent_pool)
-            print(f"Selected an opponent from the pool for this game.")
+            # print(f"Selected an opponent from the pool for this game.")
         else:
             self.current_opponent_model = None  # Use default opponent actions
-            print("Opponent pool is empty. Using default opponent strategy.")
+            # print("Opponent pool is empty. Using default opponent strategy.")
 
         # Initialize previous states as None
         self.previous_opponent_state = None
@@ -364,7 +364,7 @@ class SuperAutoPetsEnv(gym.Env):
             action = int(action)
 
         player = self.agent if agent_idx == 0 else self.opponent
-        print("available actions: ", self._avail_actions(agent_idx).keys())
+        # print("available actions: ", self._avail_actions(agent_idx).keys())
         action_to_play = self._avail_actions(agent_idx).get(action, None)
         if action_to_play is None:
             if self.valid_actions_only:
@@ -427,9 +427,9 @@ class SuperAutoPetsEnv(gym.Env):
         """
         if len(self.opponent_pool) >= self.max_opponents:
             removed_opponent = self.opponent_pool.pop(0)  # Remove the oldest opponent
-            print(f"Removed oldest opponent from the pool.")
+            # print(f"Removed oldest opponent from the pool.")
         self.opponent_pool.append(opponent_model)
-        print(f"Added new opponent to the pool. Pool size is now {len(self.opponent_pool)}.")
+        # print(f"Added new opponent to the pool. Pool size is now {len(self.opponent_pool)}.")
 
     def get_opponent_action(self):
         """
