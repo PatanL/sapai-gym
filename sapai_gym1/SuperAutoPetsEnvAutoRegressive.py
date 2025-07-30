@@ -292,25 +292,32 @@ class SuperAutoPetsEnv(gym.Env):
         # self.last_action = action
 
         # Execute battle phase if both have ended their turns
-        if self.agent.turn_ended and self.opponent.turn_ended and not self.manual_battles:
-            # Store the current opponent state before the battle
-            self.previous_opponent_state = copy.deepcopy(self.opponent.team)
+        try:
+            if self.agent.turn_ended and self.opponent.turn_ended and not self.manual_battles:
+                # Store the current opponent state before the battle
+                self.previous_opponent_state = copy.deepcopy(self.opponent.team)
 
-            # Conduct the battle
-            battle_result = Battle(self.agent.team, self.opponent.team).battle()
-            self._player_fight_outcome(battle_result)
-            self.agent.start_turn()
-            self.opponent.start_turn()
-            self.turn += 1
+                # Conduct the battle
+                battle_result = Battle(self.agent.team, self.opponent.team).battle()
+                self._player_fight_outcome(battle_result)
+                self.agent.start_turn()
+                self.opponent.start_turn()
+                self.turn += 1
 
-            self.reorder_count_agent = 0
-            self.allow_additional_reorder_agent = False
+                self.reorder_count_agent = 0
+                self.allow_additional_reorder_agent = False
 
-            self.reorder_count_opponent = 0
-            self.allow_additional_reorder_opponent = False
+                self.reorder_count_opponent = 0
+                self.allow_additional_reorder_opponent = False
 
-            # Check for game termination
-            self.done = self.is_done()
+                # Check for game termination
+                self.done = self.is_done()
+        except Exception as e:
+            # If the sapai engine crashes for any reason, catch it.
+            print(f"WARNING: sapai engine crashed with error: {e}. Terminating episode.")
+            # End the episode immediately. The agent will get a neutral or slightly
+            # negative reward for this truncated episode.
+            self.done = True 
 
         # Assign rewards
         reward_agent = self.get_reward_agent()
