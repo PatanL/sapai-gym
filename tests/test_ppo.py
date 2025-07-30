@@ -25,6 +25,13 @@ from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.callbacks import EvalCallback
 
+import functools
+
+def make_env(valid_actions_only: bool = True, seed: int = 0):
+    env = SuperAutoPetsEnv(valid_actions_only=valid_actions_only, manual_battles=False)
+    env = Monitor(env)
+    return env
+
 
 class AddToOpponentPoolCallback(BaseCallback):
     def __init__(self, save_freq: int, verbose=0):
@@ -98,13 +105,19 @@ if __name__ == "__main__":
     seed = 42
 
     # ——— training env (parallel) ———
-    train_env = make_vec_env(
-        env_id=SuperAutoPetsEnv,                  # Pass the class itself
-        n_envs=num_cpu,
-        seed=seed,
-        vec_env_cls=SubprocVecEnv,
-        env_kwargs=dict(valid_actions_only=False, manual_battles=False) 
-    )
+    # train_env = make_vec_env(
+    #     env_id=SuperAutoPetsEnv,                  # Pass the class itself
+    #     n_envs=num_cpu,
+    #     seed=seed,
+    #     vec_env_cls=SubprocVecEnv,
+    #     env_kwargs=dict(valid_actions_only=False, manual_battles=False) 
+    # )
+    train_env_fns = [
+        functools.partial(make_env, valid_actions_only=False)
+        for _ in range(num_cpu)
+    ]
+    train_env = SubprocVecEnv(train_env_fns)
+    train_env.seed(seed)
 
     # ——— eval env (single) ———
     eval_env = make_vec_env(
