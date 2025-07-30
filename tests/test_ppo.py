@@ -158,23 +158,32 @@ if __name__ == "__main__":
         # The model will load its weights, optimizer, timesteps, etc.
         # You MUST pass the custom_objects if you have custom policies or layers
         # and you MUST pass the environment.
-        lr_schedule = get_schedule_fn(3e-4) # Your original learning rate
-        clip_range_schedule = get_schedule_fn(0.2) # The PPO default clip range
+        # lr_schedule = get_schedule_fn(3e-4) # Your original learning rate
+        # clip_range_schedule = get_schedule_fn(0.2) # The PPO default clip range
 
-        model = MaskablePPO.load(
-            CHECKPOINT_PATH,
-            env=train_env,
-            # If you want to change the learning rate, you can do so here:
-            # learning_rate=1e-5, 
+        # model = MaskablePPO.load(
+        #     CHECKPOINT_PATH,
+        #     env=train_env,
+        #     # If you want to change the learning rate, you can do so here:
+        #     # learning_rate=1e-5, 
+        #     tensorboard_log="./maskableppo_tensorboard/",
+        #     custom_objects={
+        #         "learning_rate": lr_schedule,
+        #         "clip_range": clip_range_schedule,
+        #     }   
+        # )
+        # train_env.env_method("add_opponent_from_path", CHECKPOINT_PATH)
+        # TO DO: FIX CHECK POINTING
+        model = MaskablePPO(
+            "MlpPolicy",
+            train_env,
+            verbose=1,
             tensorboard_log="./maskableppo_tensorboard/",
-            custom_objects={
-                "learning_rate": lr_schedule,
-                "clip_range": clip_range_schedule,
-            }   
+            n_steps=2048,
+            batch_size=64,
+            gamma=0.99,
         )
-        train_env.env_method("add_opponent_from_path", CHECKPOINT_PATH)
     else:
-        print(f"--- Resuming training from checkpoint: {CHECKPOINT_PATH} ---")
         model = MaskablePPO(
             "MlpPolicy",
             train_env,
