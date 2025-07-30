@@ -6,6 +6,7 @@ from sapai_gym1 import SuperAutoPetsEnv
 from sapai_gym1.ai import baselines
 from sapai import Team, Player
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.env_util import make_vec_env
 import gymnasium as gym
 
 from sb3_contrib import MaskablePPO
@@ -91,23 +92,26 @@ class RewardAnnealingCallback(BaseCallback):
         
         return True
 
-
-def make_env(valid_actions_only=True):
-    env = SuperAutoPetsEnv(valid_actions_only=valid_actions_only,
-                           manual_battles=False)
-    return Monitor(env)
-
 if __name__ == "__main__":
     num_cpu = 2
+    TOTAL_TIMESTEPS = 500_000
+    seed = 42
 
     # ——— training env (parallel) ———
-    train_env = SubprocVecEnv(
-        [lambda: make_env(valid_actions_only=False) for _ in range(num_cpu)]
+    train_env = make_vec_env(
+        env_id=SuperAutoPetsEnv,                  # Pass the class itself
+        n_envs=num_cpu,
+        seed=seed,
+        vec_env_cls=SubprocVecEnv,
+        env_kwargs=dict(valid_actions_only=False, manual_battles=False) 
     )
 
     # ——— eval env (single) ———
-    eval_env = DummyVecEnv(
-        [lambda: make_env(valid_actions_only=True)]
+    eval_env = make_vec_env(
+        env_id=SuperAutoPetsEnv,
+        n_envs=1, # Typically only need 1 env for evaluation
+        vec_env_cls=DummyVecEnv,
+        env_kwargs=dict(valid_actions_only=True, manual_battles=False)
     )
 
     # ——— eval callback ———
@@ -125,7 +129,7 @@ if __name__ == "__main__":
     # ——— self‑play & annealing callbacks ———
     add_opponent_cb   = AddToOpponentPoolCallback(save_freq=10_000 // num_cpu,
                                                   verbose=1)
-    reward_anneal_cb  = RewardAnnealingCallback(total_timesteps=500_000,
+    reward_anneal_cb  = RewardAnnealingCallback(total_timesteps=TOTAL_TIMESTEPS,
                                                 annealing_end_fraction=0.8)
 
     # ——— model & train ———
@@ -149,6 +153,9 @@ if __name__ == "__main__":
     # ——— clean up ———
     train_env.close()
     eval_env.close()
+
+    print("\nTraining finished!")
+    print(f"The best model was saved to: ./logs/best_model/best_model.zip")
 
 
 
