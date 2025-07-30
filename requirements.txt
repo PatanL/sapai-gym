@@ -69,7 +69,7 @@ python-dotenv==1.0.1
 pytz==2024.2
 requests==2.32.3
 rich==13.9.4
--e git+https://github.com/PatanL/sapai@df6255e61e8e1f29161cbb7dbc0075aaae4555cc#egg=sapai
+-e git+https://github.com/PatanL/sapai@855492af3892651018fffe8b0a55b59fda6d29cb#egg=sapai
 sb3_contrib==2.3.0
 scikit-learn==1.5.2
 scipy==1.14.1
