@@ -18,6 +18,7 @@ from sb3_contrib.common.maskable.utils import get_action_masks
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.callbacks import EvalCallback
@@ -75,7 +76,7 @@ class AddToOpponentPoolCallback(BaseCallback):
             opponent_model = MaskablePPO(
                 policy=self.model.policy.__class__,
                 env=self.model.get_env(),
-                **self.model.get_attr("policy_kwargs"),  # mirror keyword args
+                policy_kwargs=self.model.policy_kwargs,  # mirror keyword args
                 verbose=0
             )
             
