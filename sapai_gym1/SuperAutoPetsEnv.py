@@ -1159,8 +1159,16 @@ class SuperAutoPetsEnv(gym.Env):
         """
         print(f"Wins: {player.wins}, Lives: {player.lives}, Gold: {player.gold}, Turn: {player.turn}")
         print("Team:")
-        for pet in player.team.pets:
-            print(f" - {pet.name} (Atk: {pet.attack}, HP: {pet.health}, Status: {pet.status})")
+        # --- THIS IS THE FIX ---
+        # A Team object is iterable. Each item in it is a TeamSlot.
+        # We access the actual pet via the .pet attribute of the slot.
+        for slot in player.team:
+            if not slot.empty: # Only print pets that actually exist
+                pet = slot.pet
+                print(f" - {pet.name} (Atk: {pet.attack}, HP: {pet.health}, Status: {pet.status})")
+            else:
+                print(" - [Empty Slot]")
+        # --- END OF FIX ---
 
     def _render_shop(self, shop: Shop):
         """
@@ -1169,11 +1177,22 @@ class SuperAutoPetsEnv(gym.Env):
         :param shop: Shop object.
         """
         print("Pets in Shop:")
-        for pet in shop.pets:
-            print(f" - {pet.name}")
+        # A Shop object is also iterable. Each item is a ShopSlot.
+        # We can access the pet/food via the .obj attribute.
+        pet_slots = [slot for slot in shop if slot.slot_type == 'pet']
+        if not pet_slots:
+            print(" - (No pets in shop)")
+        for slot in pet_slots:
+            pet = slot.obj
+            print(f" - {pet.name} (Cost: {slot.cost})")
+
         print("Foods in Shop:")
-        for food, cost in shop.foods:
-            print(f" - {food.name} (Cost: {cost})")
+        food_slots = [slot for slot in shop if slot.slot_type == 'food']
+        if not food_slots:
+            print(" - (No food in shop)")
+        for slot in food_slots:
+            food = slot.obj
+            print(f" - {food.name} (Cost: {slot.cost})")
 
     def _player_fight_outcome(self, outcome: int):
         """
