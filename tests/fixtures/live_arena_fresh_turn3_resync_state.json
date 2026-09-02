@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "phase": "shop",
+  "turn": 3,
+  "gold": 2,
+  "lives": 5,
+  "wins": 2,
+  "opponent_lives": 5,
+  "opponent_wins": 0,
+  "team": {"slots": [
+    {"item_id": "pet-ant", "attack": 3, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "ability_counter": 0, "friends_hurt_counter": 0, "confidence": 1.0},
+    {"item_id": "pet-otter", "attack": 3, "health": 6, "level": 2, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 2, "ability_counter": 0, "friends_hurt_counter": 0, "confidence": 1.0},
+    {"item_id": "pet-mosquito", "attack": 4, "health": 3, "level": 1, "experience": 1, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "ability_counter": 0, "friends_hurt_counter": 0, "confidence": 1.0},
+    {"item_id": "pet-camel", "attack": 3, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "ability_counter": 0, "friends_hurt_counter": 0, "confidence": 1.0},
+    null
+  ], "confidence": 1.0},
+  "shop": [
+    {"index": 0, "kind": "pet", "pet": {"item_id": "pet-peacock", "attack": 2, "health": 5, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "ability_counter": 0, "friends_hurt_counter": 0, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 1, "kind": "pet", "pet": {"item_id": "pet-swan", "attack": 1, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "ability_counter": 0, "friends_hurt_counter": 0, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 2, "kind": "food", "pet": null, "food": {"visual_id": "food-sleeping-pill", "canonical_id": "food-sleeping-pill", "cost": 1, "attack": 0, "health": 0, "status_id": "none", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0}
+  ],
+  "opponent_history": [],
+  "shop_attack": 0,
+  "shop_health": 0,
+  "freeze_toggled_shop_indices": [],
+  "last_battle_outcome": "win",
+  "action_count": 10,
+  "reorder_count": 1,
+  "screenshot_sha256": null,
+  "confidence": 1.0,
+  "metadata": {"source": "fresh Arena turn-3 post-MOVE resynchronization"}
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "phase": "shop",
+  "turn": 5,
+  "gold": 10,
+  "lives": 4,
+  "wins": 1,
+  "opponent_lives": 5,
+  "opponent_wins": 0,
+  "team": {"slots": [
+    {"item_id": "pet-fish", "attack": 3, "health": 7, "level": 1, "experience": 1, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-otter", "attack": 5, "health": 8, "level": 2, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 2, "confidence": 1.0},
+    {"item_id": "pet-ant", "attack": 2, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-spider", "attack": 2, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-snail", "attack": 2, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}
+  ], "confidence": 1.0},
+  "shop": [
+    {"index": 0, "kind": "pet", "pet": {"item_id": "pet-dog", "attack": 3, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 1, "kind": "pet", "pet": {"item_id": "pet-crab", "attack": 4, "health": 1, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 2, "kind": "pet", "pet": {"item_id": "pet-kangaroo", "attack": 2, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 3, "kind": "pet", "pet": {"item_id": "pet-cricket", "attack": 1, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 4, "kind": "food", "pet": null, "food": {"visual_id": "food-meat-bone", "canonical_id": "food-meat-bone", "cost": 3, "attack": 0, "health": 0, "status_id": "status-bone-attack", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 5, "kind": "food", "pet": null, "food": {"visual_id": "food-cake", "canonical_id": "food-cake", "cost": 3, "attack": 0, "health": 0, "status_id": "status-cake", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0}
+  ],
+  "opponent_history": [],
+  "last_battle_outcome": "win",
+  "action_count": 0,
+  "reorder_count": 0,
+  "screenshot_sha256": null,
+  "confidence": 1.0,
+  "metadata": {"source": "live Arena turn-5 calibration after first win"}
+}

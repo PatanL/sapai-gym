@@ -2,12 +2,13 @@ from setuptools import setup, find_packages
 
 setup(
       name='sapai_gym',
-      version='0.1.0',
+      version='0.2.0',
       packages=find_packages(),
       install_requires=[
-          "sapai @ git+https://github.com/manny405/sapai.git@main",
-          "gym~=0.21.0, <0.27.0",
-          "scikit-learn"
+          "gymnasium>=0.29.1,<1.3",
+          "numpy>=1.26,<3",
+          "scikit-learn>=1.5,<2",
+          "stable-baselines3>=2.7,<3",
+          "sb3-contrib>=2.3,<3",
       ]
 )
-

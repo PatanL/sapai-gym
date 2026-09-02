@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "phase": "shop",
+  "turn": 2,
+  "gold": 10,
+  "lives": 4,
+  "wins": 0,
+  "opponent_lives": 5,
+  "opponent_wins": 0,
+  "team": {"slots": [{"item_id": "pet-fish", "attack": 2, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, null, {"item_id": "pet-otter", "attack": 1, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, null, null], "confidence": 1.0},
+  "shop": [
+    {"index": 0, "kind": "pet", "pet": {"item_id": "pet-pigeon", "attack": 3, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 1, "kind": "pet", "pet": {"item_id": "pet-fish", "attack": 2, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 2, "kind": "pet", "pet": {"item_id": "pet-duck", "attack": 2, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 3, "kind": "food", "pet": null, "food": {"visual_id": "food-apple", "canonical_id": "food-apple", "cost": 3, "attack": 1, "health": 1, "status_id": "none", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0}
+  ],
+  "opponent_history": [],
+  "last_battle_outcome": "loss",
+  "action_count": 0,
+  "reorder_count": 0,
+  "screenshot_sha256": null,
+  "confidence": 1.0,
+  "metadata": {"source": "live Arena turn-2 calibration after defeat"}
+}

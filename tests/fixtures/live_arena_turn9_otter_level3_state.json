@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "phase": "shop",
+  "turn": 9,
+  "gold": 1,
+  "lives": 3,
+  "wins": 2,
+  "opponent_lives": 5,
+  "opponent_wins": 0,
+  "team": {"slots": [
+    {"item_id": "pet-dolphin", "attack": 5, "health": 5, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-fish", "attack": 6, "health": 10, "level": 2, "experience": 1, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 2, "confidence": 1.0},
+    {"item_id": "pet-otter", "attack": 10, "health": 13, "level": 3, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 3, "confidence": 1.0},
+    {"item_id": "pet-crocodile", "attack": 9, "health": 6, "level": 1, "experience": 1, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-snail", "attack": 4, "health": 7, "level": 1, "experience": 1, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}
+  ], "confidence": 1.0},
+  "shop": [
+    {"index": 0, "kind": "levelup", "pet": {"item_id": "pet-mammoth", "attack": 4, "health": 12, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": 1, "confidence": 1.0},
+    {"index": 1, "kind": "levelup", "pet": {"item_id": "pet-wolverine", "attack": 5, "health": 7, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": 1, "confidence": 1.0},
+    {"index": 2, "kind": "pet", "pet": {"item_id": "pet-camel", "attack": 3, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 3, "kind": "pet", "pet": {"item_id": "pet-camel", "attack": 3, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 4, "kind": "pet", "pet": {"item_id": "pet-cricket", "attack": 1, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 5, "kind": "food", "pet": null, "food": {"visual_id": "food-salad-bowl", "canonical_id": "food-salad-bowl", "cost": 3, "attack": 1, "health": 1, "status_id": "none", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 6, "kind": "food", "pet": null, "food": {"visual_id": "food-chili", "canonical_id": "food-chili", "cost": 3, "attack": 0, "health": 0, "status_id": "status-splash-attack", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0}
+  ],
+  "opponent_history": [],
+  "last_battle_outcome": "loss",
+  "action_count": 10,
+  "reorder_count": 0,
+  "screenshot_sha256": null,
+  "confidence": 1.0,
+  "metadata": {"source": "live Arena turn-9 Otter level-3 calibration"}
+}

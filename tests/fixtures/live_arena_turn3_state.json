@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "phase": "shop",
+  "turn": 3,
+  "gold": 10,
+  "lives": 4,
+  "wins": 0,
+  "opponent_lives": 5,
+  "opponent_wins": 0,
+  "team": {"slots": [
+    {"item_id": "pet-fish", "attack": 2, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-fish", "attack": 2, "health": 3, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-otter", "attack": 1, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-ant", "attack": 2, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0},
+    {"item_id": "pet-duck", "attack": 2, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}
+  ], "confidence": 1.0},
+  "shop": [
+    {"index": 0, "kind": "pet", "pet": {"item_id": "pet-worm", "attack": 1, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 1, "kind": "pet", "pet": {"item_id": "pet-spider", "attack": 2, "health": 2, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 2, "kind": "pet", "pet": {"item_id": "pet-otter", "attack": 1, "health": 4, "level": 1, "experience": 0, "status_id": "none", "temporary_attack": false, "temporary_health": false, "sell_value": 1, "confidence": 1.0}, "food": null, "frozen": false, "reward_group": null, "confidence": 1.0},
+    {"index": 3, "kind": "food", "pet": null, "food": {"visual_id": "food-cupcake", "canonical_id": "food-cupcake", "cost": 3, "attack": 3, "health": 3, "status_id": "none", "confidence": 1.0}, "frozen": false, "reward_group": null, "confidence": 1.0}
+  ],
+  "opponent_history": [],
+  "last_battle_outcome": "loss",
+  "action_count": 0,
+  "reorder_count": 0,
+  "screenshot_sha256": null,
+  "confidence": 1.0,
+  "metadata": {"source": "live Arena turn-3 calibration after restored heart"}
+}

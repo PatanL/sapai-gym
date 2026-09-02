@@ -15,6 +15,13 @@ from sapai.data import data
 from sb3_contrib import MaskablePPO 
 from sb3_contrib.common.maskable.utils import get_action_masks
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from .rl.action_schema import (
+    ActionType,
+    AutoregressiveAction,
+    FlatActionCodec,
+    MAX_SHOP_SLOTS,
+    NO_TARGET,
+)
 
 
 class SuperAutoPetsEnv(gym.Env):
@@ -27,23 +34,33 @@ class SuperAutoPetsEnv(gym.Env):
     metadata = {'render_modes': ['human']}
     
     # Define constants
-    MAX_ACTIONS = 213
+    # Stable action regions keyed by physical shop/team slots.  The previous
+    # implementation renumbered filtered affordable items, causing an action
+    # ID to silently change meaning as gold changed.
+    MAX_ACTIONS = FlatActionCodec.NUM_ACTIONS
     ACTION_BASE_NUM = {
-        "end_turn": 0,
-        "buy_pet": 1,
-        "buy_food": 7,
-        "buy_combine": 17,
-        "combine": 47,
-        "sell": 57,
-        "roll": 62,
-        "buy_food_team": 63,
-        "reorder": 65,
+        "end_turn": FlatActionCodec.END_TURN,
+        "buy_pet": FlatActionCodec.BUY_PET,
+        "buy_food": FlatActionCodec.BUY_FOOD,
+        "combine": FlatActionCodec.COMBINE,
+        "sell": FlatActionCodec.SELL,
+        "roll": FlatActionCodec.ROLL,
+        "freeze": FlatActionCodec.FREEZE,
+        "unfreeze": FlatActionCodec.UNFREEZE,
+        "move": FlatActionCodec.MOVE,
     }
     MAX_TURN = 25
+    MAX_LIVES = 6
+    MAX_REORDERS_PER_TURN = 2
     BAD_ACTION_PENALTY = -0.5
+    # Current Turtle P1 has no gold carry-over or end-turn ability that
+    # benefits from retaining gold. Even a final roll can reveal an item worth
+    # freezing for the next shop, so normal END_TURN is legal only at zero.
+    # The hard 50-action safety cap below can still force termination.
+    MAX_UNSPENT_GOLD_TO_END = 0
     MAX_TEAM_PETS = 5
     MAX_SHOP_PETS = 6
-    MAX_SHOP_FOODS = 3
+    MAX_SHOP_FOODS = 7
     ALL_PETS = [
         "pet-ant", "pet-beaver", "pet-beetle", "pet-bluebird", "pet-cricket", "pet-duck",
         "pet-fish", "pet-horse", "pet-ladybug", "pet-mosquito", "pet-otter", "pet-pig",
@@ -62,20 +79,22 @@ class SuperAutoPetsEnv(gym.Env):
         "pet-leopard", "pet-mammoth", "pet-octopus", "pet-sauropod", "pet-snake",
         "pet-tiger", "pet-tyrannosaurus", "pet-zombie-cricket", "pet-bus",
         "pet-zombie-fly", "pet-dirty-rat", "pet-chick", "pet-ram",
-        "pet-butterfly", "pet-bee"
+        "pet-butterfly", "pet-bee", "pet-pigeon", "pet-armadillo",
+        "pet-wolverine"
     ]
     ALL_FOODS = [
         "food-apple", "food-honey", "food-cupcake", "food-meat-bone",
         "food-sleeping-pill", "food-garlic", "food-salad-bowl",
         "food-canned-food", "food-pear", "food-chili", "food-chocolate",
         "food-sushi", "food-melon", "food-mushroom", "food-pizza",
-        "food-steak", "food-milk"
+        "food-steak", "food-milk", "food-cake", "food-bread",
+        "food-bread-crumbs"
     ]
     ALL_STATUSES = [
         "status-weak", "status-coconut-shield", "status-honey-bee",
         "status-bone-attack", "status-garlic-armor", "status-splash-attack",
         "status-melon-armor", "status-extra-life", "status-steak-attack",
-        "status-poison-attack"
+        "status-poison-attack", "status-cake", "status-bread"
     ]
 
     def __init__(self, opponent_generator=None, valid_actions_only=True, manual_battles=False):
@@ -121,7 +140,12 @@ class SuperAutoPetsEnv(gym.Env):
         total_obs_size = agent_state_size + opponent_state_size
         # print("total_obs_size: ", total_obs_size)
 
-        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(1660,), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(total_obs_size,),
+            dtype=np.float32,
+        )
         self.reward_range = (-1.0, 1.0)
 
         self.valid_actions_only = valid_actions_only
@@ -138,8 +162,8 @@ class SuperAutoPetsEnv(gym.Env):
         self.status_encoder.fit(np.array(self.ALL_STATUSES).reshape(-1, 1))
 
         # Initialize the single agent and the opponent
-        self.agent = Player()
-        self.opponent = Player()
+        self.agent = Player(record_actions=False)
+        self.opponent = Player(record_actions=False)
 
         # Initialize shops and teams
         self.shop_agent = Shop(turn=1, pack="StandardPack")
@@ -169,6 +193,8 @@ class SuperAutoPetsEnv(gym.Env):
         self.current_opponent_model: Optional[PPO] = None  # Opponent selected for the current game
         self.previous_opponent_state: Optional[Team] = None  # Opponent's state from the previous turn
         self.previous_agent_state: Optional[Team] = None  # Agent's state from the previous turn
+        self.previous_previous_opponent_state: Optional[Team] = None
+        self.previous_previous_agent_state: Optional[Team] = None
 
         # Initialize random state
         self.rs_random = np.random.RandomState(None)
@@ -179,9 +205,19 @@ class SuperAutoPetsEnv(gym.Env):
 
         self.reorder_count_opponent = 0
         self.allow_additional_reorder_opponent = False
+        self.shop_action_count_agent = 0
+        self.shop_action_count_opponent = 0
 
         self._agent_actions_cache = None
         self._opponent_actions_cache = None
+        self._freeze_toggled_agent = set()
+        self._freeze_toggled_opponent = set()
+        self._seen_team_orders_agent = {
+            self._team_order_key(self.agent)
+        }
+        self._seen_team_orders_opponent = {
+            self._team_order_key(self.opponent)
+        }
 
         # variables for reward shaping and annealing
         self.agent_max_team_stats = 0
@@ -202,26 +238,35 @@ class SuperAutoPetsEnv(gym.Env):
         else:
             self.rs_random = np.random.RandomState()
 
-        # Reset players
-        seed_state = self.rs_random.get_state()
-        self.agent = Player(seed_state=seed_state)
-        self.opponent = Player(seed_state=seed_state)
+        def next_seed_state():
+            child_seed = int(self.rs_random.randint(0, 2**32 - 1))
+            return np.random.RandomState(child_seed).get_state()
 
-        # Reset shops
-        self.shop_agent = Shop(turn=1, pack="StandardPack")
-        self.shop_opponent = Shop(turn=1, pack="StandardPack")
-        self.agent.shop = self.shop_agent
-        self.opponent.shop = self.shop_opponent
-
-        # Reset teams
-        self.team_agent = Team(pack="StandardPack")
-        self.team_opponent = Team(pack="StandardPack")
-        self.agent.team = self.team_agent
-        self.opponent.team = self.team_opponent
-
-        # Perform initial shop roll
-        self.shop_agent.roll()
-        self.shop_opponent.roll()
+        # Give both self-play sides independent shop and team RNG streams.
+        # Passing the same explicit reset seed reproduces all four streams;
+        # reset(seed=None) draws fresh entropy for ordinary training/play.
+        self.shop_agent = Shop(
+            turn=1, pack="StandardPack", seed_state=next_seed_state()
+        )
+        self.team_agent = Team(
+            pack="StandardPack", seed_state=next_seed_state()
+        )
+        self.shop_opponent = Shop(
+            turn=1, pack="StandardPack", seed_state=next_seed_state()
+        )
+        self.team_opponent = Team(
+            pack="StandardPack", seed_state=next_seed_state()
+        )
+        self.agent = Player(
+            shop=self.shop_agent,
+            team=self.team_agent,
+            record_actions=False,
+        )
+        self.opponent = Player(
+            shop=self.shop_opponent,
+            team=self.team_opponent,
+            record_actions=False,
+        )
 
         # Reset game state
         self.done = False
@@ -239,6 +284,8 @@ class SuperAutoPetsEnv(gym.Env):
 
         self.reorder_count_opponent = 0
         self.allow_additional_reorder_opponent = False
+        self.shop_action_count_agent = 0
+        self.shop_action_count_opponent = 0
 
         # Select a consistent opponent for this game from the opponent pool
         if self.opponent_pool:
@@ -251,10 +298,20 @@ class SuperAutoPetsEnv(gym.Env):
         # Initialize previous states as None
         self.previous_opponent_state = None
         self.previous_agent_state = None
+        self.previous_previous_opponent_state = None
+        self.previous_previous_agent_state = None
 
         # Clear the avail_actions cache on reset
         self._agent_actions_cache = None
         self._opponent_actions_cache = None
+        self._freeze_toggled_agent = set()
+        self._freeze_toggled_opponent = set()
+        self._seen_team_orders_agent = {
+            self._team_order_key(self.agent)
+        }
+        self._seen_team_orders_opponent = {
+            self._team_order_key(self.opponent)
+        }
 
         self.agent_max_team_stats = 0
         self.step_reward = 0.0
@@ -294,9 +351,23 @@ class SuperAutoPetsEnv(gym.Env):
         # Resolve the agent's action
         agent_action_name = self.resolve_action(agent_idx=0, action=action)
 
-        # Resolve the opponent's action
-        opponent_action = self.get_opponent_action()
-        opponent_action_name = self.resolve_action(agent_idx=1, action=opponent_action)
+        # Resolve one opponent action while it is still shopping.  If the
+        # learning agent ends first, finish the opponent shop phase internally
+        # so the ended agent can never act again before battle.
+        if not self.opponent.turn_ended:
+            opponent_action = self.get_opponent_action()
+            self.resolve_action(agent_idx=1, action=opponent_action)
+
+        if self.agent.turn_ended:
+            for _ in range(100):
+                if self.opponent.turn_ended:
+                    break
+                opponent_action = self.get_opponent_action()
+                self.resolve_action(agent_idx=1, action=opponent_action)
+            if not self.opponent.turn_ended:
+                self.resolve_action(
+                    agent_idx=1, action=self.ACTION_BASE_NUM["end_turn"]
+                )
 
         # Resolve action
         #     player_to_act = self.player
@@ -318,13 +389,20 @@ class SuperAutoPetsEnv(gym.Env):
             # Store the current opponent state before the battle
             # self.previous_opponent_state = copy.deepcopy(self.opponent.team)
             # Instead of: self.previous_opponent_state = copy.deepcopy(self.opponent.team)
-            self.previous_opponent_state_dict = self.opponent.team.state
+            self.previous_previous_opponent_state = self.previous_opponent_state
+            self.previous_previous_agent_state = self.previous_agent_state
+            self.previous_opponent_state = Team.from_state(self.opponent.team.state)
+            self.previous_agent_state = Team.from_state(self.agent.team.state)
 
             # Conduct the battle
-            battle_result = Battle(self.agent.team, self.opponent.team).battle()
+            battle_result = Battle(
+                self.agent.team,
+                self.opponent.team,
+                seed=int(self.rs_random.randint(0, 2**32 - 1)),
+            ).battle()
             self._player_fight_outcome(battle_result)
-            self.agent.start_turn()
-            self.opponent.start_turn()
+            self.agent.start_turn(winner=self.agent.lf_winner)
+            self.opponent.start_turn(winner=self.opponent.lf_winner)
             self.turn += 1
 
             self.reorder_count_agent = 0
@@ -332,6 +410,16 @@ class SuperAutoPetsEnv(gym.Env):
 
             self.reorder_count_opponent = 0
             self.allow_additional_reorder_opponent = False
+            self.shop_action_count_agent = 0
+            self.shop_action_count_opponent = 0
+            self._freeze_toggled_agent.clear()
+            self._freeze_toggled_opponent.clear()
+            self._seen_team_orders_agent = {
+                self._team_order_key(self.agent)
+            }
+            self._seen_team_orders_opponent = {
+                self._team_order_key(self.opponent)
+            }
 
             # Check for game termination
             self.done = self.is_done()
@@ -388,7 +476,27 @@ class SuperAutoPetsEnv(gym.Env):
 
         # finish executing action
         action_method = getattr(player, action_name)
+        freeze_keys = []
+        if action_name in {"freeze", "unfreeze"}:
+            selected_slot = player.shop.slots[action_to_play[1]]
+            # Discover purchase linkage does not couple freeze toggles. The
+            # sibling remains independently freezeable in the same shop.
+            freeze_keys = [id(selected_slot.obj)]
         action_method(*action_to_play[1:])
+        toggled = (
+            self._freeze_toggled_agent
+            if agent_idx == 0
+            else self._freeze_toggled_opponent
+        )
+        if freeze_keys:
+            toggled.update(freeze_keys)
+        elif action_name == "roll":
+            toggled.clear()
+
+        if agent_idx == 0:
+            self.shop_action_count_agent += 1
+        else:
+            self.shop_action_count_opponent += 1
 
         
         # Invalidate the cache for the agent that just acted
@@ -401,11 +509,17 @@ class SuperAutoPetsEnv(gym.Env):
         if agent_idx == 0:
             self.last_actions[0] = action
         
-        if action_name == "reorder":
+        if action_name in ("reorder", "swap"):
             if agent_idx == 0:
                 self.reorder_count_agent += 1
+                self._seen_team_orders_agent.add(
+                    self._team_order_key(self.agent)
+                )
             else:
                 self.reorder_count_opponent += 1
+                self._seen_team_orders_opponent.add(
+                    self._team_order_key(self.opponent)
+                )
         
         # if agent_idx == 0:
         #     if action_name == "buy_pet":
@@ -473,7 +587,7 @@ class SuperAutoPetsEnv(gym.Env):
         available_actions = list(self._avail_actions(agent_idx=1).keys())
         if not available_actions:
             return self.ACTION_BASE_NUM["end_turn"]
-        return np.random.choice(available_actions)
+        return self.rs_random.choice(available_actions)
     
     def add_opponent_from_path(self, model_path: str):
         """
@@ -533,7 +647,7 @@ class SuperAutoPetsEnv(gym.Env):
 
         return reward
 
-    def _avail_end_turn(self, agent_idx: int):
+    def _avail_end_turn(self, agent_idx: int, force: bool = False):
         """
         Get available 'end_turn' actions for the specified agent.
         
@@ -541,8 +655,11 @@ class SuperAutoPetsEnv(gym.Env):
         :return: Dictionary of available 'end_turn' actions.
         """
         action_dict = {}
+        player = self.agent if agent_idx == 0 else self.opponent
+        if not force and player.gold > self.MAX_UNSPENT_GOLD_TO_END:
+            return action_dict
         action_num = self.ACTION_BASE_NUM["end_turn"]
-        action_dict[action_num] = (self.agent.end_turn,) if agent_idx == 0 else (self.opponent.end_turn,)
+        action_dict[action_num] = (player.end_turn,)
         return action_dict
 
     # def _avail_buy_pets(self, agent_idx: int):
@@ -571,20 +688,30 @@ class SuperAutoPetsEnv(gym.Env):
     def _avail_buy_pets(self, agent_idx: int):
         action_dict = {}
         player = self.agent if agent_idx == 0 else self.opponent
-
-        if len(player.team) >= self.MAX_TEAM_PETS:
-            return action_dict
-
-        # 1. Filter for only the pet slots that are actually available for purchase.
-        available_pet_slots = [
-            (shop_idx, shop_slot) for shop_idx, shop_slot in enumerate(player.shop)
-            if shop_slot.slot_type == "pet" and shop_slot.cost <= player.gold
-        ]
-
-        # 2. Iterate over the filtered list to create the actions.
-        for pet_index, (shop_idx, shop_slot) in enumerate(available_pet_slots):
-            action_num = self.ACTION_BASE_NUM["buy_pet"] + pet_index
-            action_dict[action_num] = (player.buy_pet, shop_idx)
+        for shop_idx, shop_slot in enumerate(player.shop):
+            if shop_idx >= MAX_SHOP_SLOTS:
+                break
+            if (
+                shop_slot.slot_type not in {"pet", "levelup"}
+                or shop_slot.cost > player.gold
+            ):
+                continue
+            for team_idx, team_slot in enumerate(player.team):
+                action = AutoregressiveAction(
+                    ActionType.BUY_PET, shop_idx, team_idx
+                )
+                action_num = FlatActionCodec.encode(action)
+                if team_slot.empty:
+                    action_dict[action_num] = (player.buy_pet, shop_idx, team_idx)
+                elif (
+                    team_slot.pet.name == shop_slot.obj.name
+                    and team_slot.pet.level < 3
+                ):
+                    action_dict[action_num] = (
+                        player.buy_combine,
+                        shop_idx,
+                        team_idx,
+                    )
                 
         return action_dict
 
@@ -627,31 +754,32 @@ class SuperAutoPetsEnv(gym.Env):
         if len(player.team) == 0:
             return action_dict
 
-        # 1. First, create a list of all food slots that are actually available for purchase.
-        #    We store both the original shop index (shop_idx) and the slot object.
-        available_food_slots = [
-            (shop_idx, shop_slot) for shop_idx, shop_slot in enumerate(player.shop)
-            if shop_slot.slot_type == "food" and shop_slot.cost <= player.gold
-        ]
-
-        # 2. Now, iterate over this filtered list. `food_index` will be the correct 0, 1, 2...
-        for food_index, (shop_idx, shop_slot) in enumerate(available_food_slots):
+        for shop_idx, shop_slot in enumerate(player.shop):
+            if shop_idx >= MAX_SHOP_SLOTS:
+                break
+            if shop_slot.slot_type != "food" or shop_slot.cost > player.gold:
+                continue
             food_effect = data["foods"][shop_slot.obj.name]["ability"]["effect"]
 
             # Handle team-wide foods (like Canned Food)
             if shop_slot.obj.name == "food-canned-food" or \
             ("target" in food_effect and food_effect["target"].get("kind") == "RandomFriend"):
                 
-                action_num = self.ACTION_BASE_NUM["buy_food_team"] + food_index
-                # The action tuple uses the original `shop_idx` for the game engine.
+                action_num = FlatActionCodec.encode(
+                    AutoregressiveAction(
+                        ActionType.BUY_FOOD, shop_idx, NO_TARGET
+                    )
+                )
                 action_dict[action_num] = (player.buy_food, shop_idx)
             else:
                 # Handle targeted foods (like Apple)
                 for team_idx, team_slot in enumerate(player.team):
                     if not team_slot.empty:
-                        # The action number uses the clean `food_index`.
-                        action_num = self.ACTION_BASE_NUM["buy_food"] + (food_index * self.MAX_TEAM_PETS) + team_idx
-                        # The action tuple uses the original `shop_idx`.
+                        action_num = FlatActionCodec.encode(
+                            AutoregressiveAction(
+                                ActionType.BUY_FOOD, shop_idx, team_idx
+                            )
+                        )
                         action_dict[action_num] = (player.buy_food, shop_idx, team_idx)
                 
         return action_dict
@@ -689,34 +817,6 @@ class SuperAutoPetsEnv(gym.Env):
     #             shop_pet_index += 1
 
     #     return action_dict
-    def _avail_buy_combine(self, agent_idx: int):
-        action_dict = {}
-        player = self.agent if agent_idx == 0 else self.opponent
-
-        if len(player.team) == 0:
-            return action_dict
-
-        # Create a lookup for pets on the team for efficient checking
-        team_pet_names = {slot.pet.name for slot in player.team if not slot.empty}
-
-        # 1. Filter for only the shop pets that are valid for combining.
-        available_combine_slots = [
-            (shop_idx, shop_slot) for shop_idx, shop_slot in enumerate(player.shop)
-            if (shop_slot.slot_type == "pet" and
-                shop_slot.cost <= player.gold and
-                shop_slot.obj.name in team_pet_names)
-        ]
-
-        # 2. Iterate over the filtered list to create actions.
-        for shop_pet_index, (shop_idx, shop_slot) in enumerate(available_combine_slots):
-            # Find all team pets that can be combined with this shop pet
-            for team_idx, team_slot in enumerate(player.team):
-                if not team_slot.empty and team_slot.pet.name == shop_slot.obj.name:
-                    action_num = self.ACTION_BASE_NUM["buy_combine"] + (shop_pet_index * self.MAX_TEAM_PETS) + team_idx
-                    action_dict[action_num] = (player.buy_combine, shop_idx, team_idx)
-
-        return action_dict
-
     def _avail_team_combine(self, agent_idx: int):
         """
         Get available 'combine' actions for the specified agent.
@@ -731,22 +831,27 @@ class SuperAutoPetsEnv(gym.Env):
         if len(player.team) <= 1:
             return action_dict
 
-        team_names = {}
-        for slot_idx, slot in enumerate(player.team):
-            if slot.empty:
+        for source_idx, source_slot in enumerate(player.team):
+            if source_slot.empty:
                 continue
-            if slot.pet.name not in team_names:
-                team_names[slot.pet.name] = []
-            team_names[slot.pet.name].append(slot_idx)
-
-        for pet_name, indices in team_names.items():
-            if len(indices) == 1:
-                continue
-
-            for idx0, idx1 in itertools.combinations(indices, r=2):
-                indexes = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]
-                action_num = self.ACTION_BASE_NUM["combine"] + indexes.index((idx0, idx1))
-                action_dict[action_num] = (player.combine, idx0, idx1)
+            for target_idx, target_slot in enumerate(player.team):
+                if source_idx == target_idx or target_slot.empty:
+                    continue
+                if source_slot.pet.name != target_slot.pet.name:
+                    continue
+                if source_slot.pet.level >= 3 or target_slot.pet.level >= 3:
+                    continue
+                action_num = FlatActionCodec.encode(
+                    AutoregressiveAction(
+                        ActionType.COMBINE, source_idx, target_idx
+                    )
+                )
+                # The destination/target pet is retained.
+                action_dict[action_num] = (
+                    player.combine,
+                    target_idx,
+                    source_idx,
+                )
 
         return action_dict
 
@@ -762,14 +867,13 @@ class SuperAutoPetsEnv(gym.Env):
         player = self.agent if agent_idx == 0 else self.opponent
         team = self.team_agent if agent_idx == 0 else self.team_opponent
         
-        # Only allow selling if there are 5 or more pets on the team
-        # maybe only allow to sell if you have more than 2 gold?
-        if len([slot for slot in player.team if not slot.empty]) >= 5:
-            for team_idx, slot in enumerate(player.team):
-                if slot.empty:
-                    continue
-                action_num = self.ACTION_BASE_NUM["sell"] + team_idx
-                action_dict[action_num] = (player.sell, team_idx)
+        for team_idx, slot in enumerate(player.team):
+            if slot.empty:
+                continue
+            action_num = FlatActionCodec.encode(
+                AutoregressiveAction(ActionType.SELL, team_idx)
+            )
+            action_dict[action_num] = (player.sell, team_idx)
         
         return action_dict
 
@@ -784,51 +888,96 @@ class SuperAutoPetsEnv(gym.Env):
         player = self.agent if agent_idx == 0 else self.opponent
         shop = self.shop_agent if agent_idx == 0 else self.shop_opponent
 
-        if player.gold > 1:
-            action_dict[self.ACTION_BASE_NUM["roll"]] = (player.roll,)
+        if player.gold >= 1:
+            action_dict[FlatActionCodec.ROLL] = (player.roll,)
         return action_dict
 
-    def _avail_reorder(self, agent_idx):
-        """
-        Get available 'reorder' actions for the specified agent.
-        
-        :param agent_idx: Index of the agent (0 for agent, 1 for opponent).
-        :return: Dictionary of available 'reorder' actions.
-        """
+    def _avail_freeze(self, agent_idx):
         action_dict = {}
+        player = self.agent if agent_idx == 0 else self.opponent
+        toggled = (
+            self._freeze_toggled_agent
+            if agent_idx == 0
+            else self._freeze_toggled_opponent
+        )
+        for shop_idx, slot in enumerate(player.shop):
+            if shop_idx >= MAX_SHOP_SLOTS:
+                break
+            if slot.empty or slot.frozen or id(slot.obj) in toggled:
+                continue
+            action_num = FlatActionCodec.encode(
+                AutoregressiveAction(ActionType.FREEZE, shop_idx)
+            )
+            action_dict[action_num] = (player.freeze, shop_idx)
+        return action_dict
 
-        if agent_idx == 0:
-            reorder_count = self.reorder_count_agent
-            allow_additional_reorder = self.allow_additional_reorder_agent
-            player = self.agent
-            team = self.team_agent
-        else:
-            reorder_count = self.reorder_count_opponent
-            allow_additional_reorder = self.allow_additional_reorder_opponent
-            player = self.opponent
-            team = self.team_opponent
-        
-        max_reorders = 1
-        if allow_additional_reorder and reorder_count < 2:
-            max_reorders = 2
-        
-        if reorder_count >= max_reorders:
-            return action_dict  # No reorder actions available
+    def _avail_unfreeze(self, agent_idx):
+        action_dict = {}
+        player = self.agent if agent_idx == 0 else self.opponent
+        toggled = (
+            self._freeze_toggled_agent
+            if agent_idx == 0
+            else self._freeze_toggled_opponent
+        )
+        for shop_idx, slot in enumerate(player.shop):
+            if shop_idx >= MAX_SHOP_SLOTS:
+                break
+            if slot.empty or not slot.frozen or id(slot.obj) in toggled:
+                continue
+            action_num = FlatActionCodec.encode(
+                AutoregressiveAction(ActionType.UNFREEZE, shop_idx)
+            )
+            action_dict[action_num] = (player.unfreeze, shop_idx)
+        return action_dict
 
-        if player.gold > 0:
-            return {}
+    @staticmethod
+    def _team_order_key(player):
+        # Object identity distinguishes same-name pets with different stats,
+        # while remaining stable for the duration of one shop turn.
+        return tuple(
+            None if slot.empty else id(slot.pet)
+            for slot in player.team
+        )
 
-        team_size = len(player.team)
-        offset = self.ACTION_BASE_NUM["reorder"] + sum([math.factorial(k) - 1 for k in range(team_size)])
-        perms = itertools.permutations(range(team_size))
-
-        # Skip the do-nothing permutation
-        next(perms)
-
-        return {
-            offset + k: (player.reorder, perm)
-            for k, perm in enumerate(perms)
-        }
+    def _avail_move(self, agent_idx):
+        action_dict = {}
+        player = self.agent if agent_idx == 0 else self.opponent
+        reorder_count = (
+            self.reorder_count_agent
+            if agent_idx == 0
+            else self.reorder_count_opponent
+        )
+        if reorder_count >= self.MAX_REORDERS_PER_TURN:
+            return action_dict
+        seen_orders = (
+            self._seen_team_orders_agent
+            if agent_idx == 0
+            else self._seen_team_orders_opponent
+        )
+        current_order = self._team_order_key(player)
+        seen_orders.add(current_order)
+        for source_idx, source_slot in enumerate(player.team):
+            if source_slot.empty:
+                continue
+            for target_idx in range(self.MAX_TEAM_PETS):
+                if source_idx == target_idx:
+                    continue
+                resulting_order = list(current_order)
+                moved = resulting_order.pop(source_idx)
+                resulting_order.insert(target_idx, moved)
+                if tuple(resulting_order) in seen_orders:
+                    continue
+                action_num = FlatActionCodec.encode(
+                    AutoregressiveAction(
+                        ActionType.MOVE, source_idx, target_idx
+                    )
+                )
+                action_dict[action_num] = (
+                    player.swap,
+                    source_idx,
+                    target_idx,
+                )
+        return action_dict
 
     def _get_action_name(self, input_action):
         """
@@ -846,37 +995,91 @@ class SuperAutoPetsEnv(gym.Env):
         :param agent_idx: Index of the agent (0 for agent, 1 for opponent).
         :return: Dictionary mapping action numbers to action tuples.
         """
-        # Check the cache first
-        if agent_idx == 0 and self._agent_actions_cache is not None:
-            return self._agent_actions_cache
-        if agent_idx == 1 and self._opponent_actions_cache is not None:
-            return self._opponent_actions_cache
+        cache_name = (
+            "_agent_actions_cache"
+            if agent_idx == 0
+            else "_opponent_actions_cache"
+        )
+        player = self.agent if agent_idx == 0 else self.opponent
+        action_count = (
+            self.shop_action_count_agent
+            if agent_idx == 0
+            else self.shop_action_count_opponent
+        )
+        reorder_count = (
+            self.reorder_count_agent
+            if agent_idx == 0
+            else self.reorder_count_opponent
+        )
+        toggled = (
+            self._freeze_toggled_agent
+            if agent_idx == 0
+            else self._freeze_toggled_opponent
+        )
+        seen_orders = (
+            self._seen_team_orders_agent
+            if agent_idx == 0
+            else self._seen_team_orders_opponent
+        )
+        # Direct diagnostic/test state edits can bypass resolve_action(). A
+        # compact identity/legality fingerprint keeps caching correct in those
+        # paths while remaining far cheaper than rebuilding every action.
+        fingerprint = (
+            int(player.gold),
+            int(action_count),
+            int(reorder_count),
+            tuple(sorted(toggled)),
+            frozenset(seen_orders),
+            tuple(
+                None
+                if slot.empty
+                else (id(slot.pet), slot.pet.name, int(slot.pet.level))
+                for slot in player.team
+            ),
+            tuple(
+                (
+                    id(slot.obj),
+                    slot.slot_type,
+                    int(slot.cost),
+                    bool(slot.frozen),
+                )
+                for slot in player.shop
+            ),
+        )
+        cached = getattr(self, cache_name, None)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
 
         end_turn_actions = self._avail_end_turn(agent_idx)
+        if action_count >= 50:
+            # Safety valve: a malformed or cycling policy must still be able
+            # to terminate the shop after the hard action cap.
+            actions = self._avail_end_turn(agent_idx, force=True)
+            setattr(self, cache_name, (fingerprint, actions))
+            return actions
         buy_pet_actions = self._avail_buy_pets(agent_idx)
         buy_food_actions = self._avail_buy_foods(agent_idx)
-        buy_combine_actions = self._avail_buy_combine(agent_idx)
         team_combine_actions = self._avail_team_combine(agent_idx)
         sell_actions = self._avail_sell(agent_idx)
         roll_actions = self._avail_roll(agent_idx)
-        reorder_actions = self._avail_reorder(agent_idx)
+        freeze_actions = self._avail_freeze(agent_idx)
+        unfreeze_actions = self._avail_unfreeze(agent_idx)
+        move_actions = self._avail_move(agent_idx)
 
         # Combine all actions
         all_avail_actions = {**end_turn_actions, **buy_pet_actions, **buy_food_actions,
-                             **buy_combine_actions, **team_combine_actions,
-                             **sell_actions, **roll_actions, **reorder_actions}
-
-        if agent_idx == 0:
-            self._agent_actions_cache = all_avail_actions
-        else:
-            self._opponent_actions_cache = all_avail_actions
+                             **team_combine_actions, **sell_actions,
+                             **roll_actions, **freeze_actions,
+                             **unfreeze_actions, **move_actions}
 
         # Validate action uniqueness
         total_action_len = len(end_turn_actions) + len(buy_pet_actions) + len(buy_food_actions) + \
-                           len(buy_combine_actions) + len(team_combine_actions) + \
-                           len(sell_actions) + len(roll_actions) + len(reorder_actions)
+                           len(team_combine_actions) + len(sell_actions) + \
+                           len(roll_actions) + len(freeze_actions) + \
+                           len(unfreeze_actions) + len(move_actions)
         assert total_action_len == len(all_avail_actions), "Duplicate or missing actions detected."
 
+        setattr(self, cache_name, (fingerprint, all_avail_actions))
         return all_avail_actions
 
     def _is_valid_action(self, action: int) -> bool:
@@ -1030,13 +1233,13 @@ class SuperAutoPetsEnv(gym.Env):
             # Encode team
             encoded_team_pets_agent = self._encode_pets([p.pet for p in self.agent.team])
             # Encode shop
-            shop_pets = self.agent.shop.pets
-            shop_foods = self._get_shop_foods(agent_idx=0)
+            shop_pets = self.agent.shop.pets[: self.MAX_SHOP_PETS]
+            shop_foods = self._get_shop_foods(agent_idx=0)[: self.MAX_SHOP_FOODS]
 
             # Pad to the maximum number of pets and foods that can be in a shop
-            while len(shop_pets) < 6:
+            while len(shop_pets) < self.MAX_SHOP_PETS:
                 shop_pets.append(Pet("pet-none"))
-            while len(shop_foods) < 2:
+            while len(shop_foods) < self.MAX_SHOP_FOODS:
                 shop_foods.append((Food("food-none"), 0))
 
             encoded_shop_pets_agent = self._encode_pets(shop_pets)
@@ -1089,12 +1292,14 @@ class SuperAutoPetsEnv(gym.Env):
 
                 encoded_team_pets_opponent = self._encode_pets([p.pet for p in self.opponent.team])
 
-                opponent_shop_pets = self.opponent.shop.pets
-                opponent_shop_foods = self._get_shop_foods(agent_idx=1)
+                opponent_shop_pets = self.opponent.shop.pets[: self.MAX_SHOP_PETS]
+                opponent_shop_foods = self._get_shop_foods(agent_idx=1)[
+                    : self.MAX_SHOP_FOODS
+                ]
 
-                while len(opponent_shop_pets) < 6:
+                while len(opponent_shop_pets) < self.MAX_SHOP_PETS:
                     opponent_shop_pets.append(Pet("pet-none"))
-                while len(opponent_shop_foods) < 2:
+                while len(opponent_shop_foods) < self.MAX_SHOP_FOODS:
                     opponent_shop_foods.append((Food("food-none"), 0))
 
                 encoded_shop_pets_opponent = self._encode_pets(opponent_shop_pets)
@@ -1203,12 +1408,16 @@ class SuperAutoPetsEnv(gym.Env):
         if outcome == 0:
             self.agent.lf_winner = True
             self.opponent.lf_winner = False
+            self.agent.last_battle_outcome = 1
+            self.opponent.last_battle_outcome = -1
             self.agent.wins += 1
             self.opponent.lives -= 1
             self.opponent.lives = max(self.opponent.lives, 0)
         elif outcome == 1:
             self.opponent.lf_winner = True
             self.agent.lf_winner = False
+            self.agent.last_battle_outcome = -1
+            self.opponent.last_battle_outcome = 1
             self.opponent.wins += 1
             self.agent.lives -= 1
             self.agent.lives = max(self.agent.lives, 0)
@@ -1216,6 +1425,18 @@ class SuperAutoPetsEnv(gym.Env):
             # Handle draw if necessary
             self.agent.lf_winner = True
             self.opponent.lf_winner = True
+            self.agent.last_battle_outcome = 0
+            self.opponent.last_battle_outcome = 0
+
+        # Current P1 restores one heart to both players after the turn-two
+        # battle, regardless of its result, without exceeding six.  Battle
+        # outcome flags deliberately remain unchanged so a net-zero turn-two
+        # loss still enables Snail and other loss-dependent decisions.
+        if self.turn == 2:
+            self.agent.lives = min(self.MAX_LIVES, self.agent.lives + 1)
+            self.opponent.lives = min(
+                self.MAX_LIVES, self.opponent.lives + 1
+            )
 
     def close(self):
         """
@@ -1277,6 +1498,3 @@ class SuperAutoPetsEnv(gym.Env):
         This method allows a callback to update the annealing scale for shaped rewards.
         """
         self.shaping_scale = scale
-
-
-
