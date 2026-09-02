@@ -89,6 +89,14 @@ class CurriculumTest(unittest.TestCase):
             first_actions["avoid-pill-no-faint"], int(ActionType.ROLL)
         )
         self.assertEqual(
+            first_actions["avoid-freeze-level-three"],
+            int(ActionType.END_TURN),
+        )
+        self.assertEqual(
+            first_actions["avoid-freeze-obsolete-pair"],
+            int(ActionType.END_TURN),
+        )
+        self.assertEqual(
             first_actions["mushroom-deer-shark"], int(ActionType.BUY_FOOD)
         )
         self.assertEqual(

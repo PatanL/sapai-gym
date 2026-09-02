@@ -28,9 +28,11 @@ from .entity_observation import EntityObservationEncoder
 from .guide_teacher import GUIDE_SHA256, GUIDE_VERSION, TEACHER_SHA256
 
 
-CURRICULUM_VERSION = "turtle-p1-scenarios-v2-20260902"
+CURRICULUM_VERSION = "turtle-p1-scenarios-v3-20260902"
 SCENARIO_NAMES = (
     "triple-freeze",
+    "avoid-freeze-level-three",
+    "avoid-freeze-obsolete-pair",
     "turn-two-separate-pair",
     "pill-flamingo",
     "pill-turtle",
@@ -206,6 +208,36 @@ def _triple_freeze(rng):
     return env, actions
 
 
+def _avoid_freeze_level_three(rng):
+    target = str(rng.choice(("pet-ant", "pet-fish", "pet-beaver")))
+    env = _make_env(
+        turn=int(rng.integers(7, 12)),
+        gold=0,
+        team=[(target, {"copies": 6}), "pet-deer", "pet-skunk", None, None],
+        shop=[target, "pet-penguin", "pet-parrot", "food-pear"],
+        opponent=["pet-deer", "pet-shark", "pet-turkey", None, None],
+        rng=rng,
+    )
+    return env, [
+        AutoregressiveAction(ActionType.END_TURN, NO_SOURCE, NO_TARGET)
+    ]
+
+
+def _avoid_freeze_obsolete_pair(rng):
+    target = str(rng.choice(("pet-ant", "pet-beaver", "pet-horse")))
+    env = _make_env(
+        turn=int(rng.integers(9, 14)),
+        gold=0,
+        team=[target, "pet-deer", "pet-skunk", "pet-monkey", "pet-crocodile"],
+        shop=[target, "pet-dragon", "pet-snake", "pet-tiger", "food-melon"],
+        opponent=[("pet-hippo", {"tall": True}), "pet-skunk", "pet-monkey", None, None],
+        rng=rng,
+    )
+    return env, [
+        AutoregressiveAction(ActionType.END_TURN, NO_SOURCE, NO_TARGET)
+    ]
+
+
 def _turn_two_separate_pair(rng):
     """Preserve a second battle body instead of reflexively half-combining."""
 
@@ -358,6 +390,8 @@ def _scorpion_vs_tall(rng):
 
 BUILDERS = {
     "triple-freeze": _triple_freeze,
+    "avoid-freeze-level-three": _avoid_freeze_level_three,
+    "avoid-freeze-obsolete-pair": _avoid_freeze_obsolete_pair,
     "turn-two-separate-pair": _turn_two_separate_pair,
     "pill-flamingo": _pill_flamingo,
     "pill-turtle": _pill_turtle,
