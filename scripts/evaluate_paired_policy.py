@@ -24,6 +24,8 @@ from sapai_gym1.rl import (
 )
 from sapai_gym1.rl.distributed import _completed_match_result
 from sapai_gym1.rl.guide_teacher import legal_actions
+from sapai_gym1.rl.end_freeze import step_with_end_freeze
+from sapai_gym1.rl.end_freeze_checkpoint import END_FREEZE_SCHEMA, PRIMITIVE_SCHEMA
 
 
 def parse_args():
@@ -77,10 +79,12 @@ def policy_action(policy, observation, memory, device, deterministic):
         else nullcontext()
     )
     with autocast:
-        output = policy(batch, memory=memory, deterministic=deterministic)
+        options = {'allow_end_freeze': True} if getattr(policy.config, 'end_freeze', False) else {}
+        output = policy(batch, memory=memory, deterministic=deterministic, **options)
     return (
         AutoregressiveAction(*map(int, output.actions[0].cpu())),
         output.memory,
+        None if output.end_freeze_mask is None else int(output.end_freeze_mask[0].cpu()),
     )
 
 
@@ -88,6 +92,33 @@ def candidate_result(player_zero_result, candidate_side):
     if candidate_side == 0 or player_zero_result == 2:
         return player_zero_result
     return 1 - player_zero_result
+
+
+def evaluation_game_record(core, pair_index, seed, candidate_side, result_name):
+    """Expose simulated termination rules without changing scoring or play."""
+    if core.agent.lives <= 0 or core.opponent.lives <= 0:
+        reason = 'lives'
+    elif core.turn >= core.MAX_TURN:
+        reason = 'turn_limit'
+    else:
+        reason = 'other'
+    return {
+        'pairIndex': int(pair_index), 'seed': int(seed), 'candidateSide': int(candidate_side),
+        'candidateResult': result_name, 'terminationReason': reason,
+        'turnCounter': int(core.turn), 'lastBattleTurn': int(core.turn - 1),
+        'livesBySeat': [int(core.agent.lives), int(core.opponent.lives)],
+        'winsBySeat': [int(core.agent.wins), int(core.opponent.wins)],
+        'turnLimit': int(core.MAX_TURN), 'rearrangementLimit': int(core.MAX_REORDERS_PER_TURN),
+    }
+
+
+def write_evaluation_report(path, payload):
+    """A complete report appears only after serialization succeeds."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+    temporary.replace(path)
 
 
 @torch.no_grad()
@@ -112,12 +143,20 @@ def batched_policy_actions(policy, requests, device, deterministic):
             observations,
             memory=memories,
             deterministic=deterministic,
+            **({'allow_end_freeze': True} if getattr(policy.config, 'end_freeze', False) else {}),
         )
     actions = [
         AutoregressiveAction(*map(int, row.cpu())) for row in output.actions
     ]
     next_memories = [row.detach().cpu() for row in output.memory]
-    return actions, next_memories
+    masks = getattr(output, 'end_freeze_mask', None)
+    return actions, next_memories, ([None] * len(actions) if masks is None else masks.cpu().tolist())
+
+
+def step_policy_actions(env, actions, masks):
+    if any(mask is not None for mask in masks):
+        return step_with_end_freeze(env, *actions, mask_ids=tuple(0 if mask is None else mask for mask in masks)).result
+    return env.step(*actions)
 
 
 def run_batched_checkpoint_evaluation(
@@ -128,6 +167,7 @@ def run_batched_checkpoint_evaluation(
     *,
     batch_size,
     progress_every,
+    game_records=None,
 ):
     """Play deterministic paired seats with batched policy forwards."""
 
@@ -152,6 +192,7 @@ def run_batched_checkpoint_evaluation(
             games.append(
                 {
                     "pairIndex": pair_index,
+                    "seed": int(match_seed),
                     "candidateSide": candidate_side,
                     "env": env,
                     "observations": observations,
@@ -169,6 +210,7 @@ def run_batched_checkpoint_evaluation(
 
         while not all(game["done"] for game in games):
             actions = [[None, None] for _ in games]
+            freeze_masks = [[None, None] for _ in games]
             candidate_requests = []
             opponent_requests = []
             for game_index, game in enumerate(games):
@@ -196,23 +238,22 @@ def run_batched_checkpoint_evaluation(
             ):
                 if not requests:
                     continue
-                selected, next_memories = batched_policy_actions(
+                selected, next_memories, masks = batched_policy_actions(
                     policy, requests, device, deterministic=True
                 )
-                for request, action, memory in zip(
-                    requests, selected, next_memories
+                for request, action, memory, mask in zip(
+                    requests, selected, next_memories, masks
                 ):
                     game_index = request["gameIndex"]
                     side = request["side"]
                     actions[game_index][side] = action
+                    freeze_masks[game_index][side] = mask
                     games[game_index]["memories"][side] = memory
 
             for game_index, game in enumerate(games):
                 if game["done"]:
                     continue
-                step = game["env"].step(
-                    actions[game_index][0], actions[game_index][1]
-                )
+                step = step_policy_actions(game['env'], actions[game_index], freeze_masks[game_index])
                 game["observations"] = step.observations
                 if not step.terminated:
                     continue
@@ -222,6 +263,11 @@ def run_batched_checkpoint_evaluation(
                     game["candidateSide"],
                 )
                 result_name = {0: "win", 1: "loss", 2: "draw"}[result]
+                if game_records is not None:
+                    game_records.append(evaluation_game_record(
+                        game['env'].core, game['pairIndex'], game['seed'],
+                        game['candidateSide'], result_name,
+                    ))
                 outcomes[result_name] += 1
                 seat_outcomes[game["candidateSide"]][result_name] += 1
                 pair_points[game["pairIndex"]] += (
@@ -279,6 +325,7 @@ def main():
     pair_seeds = master_rng.integers(0, 2**31 - 1, size=args.pairs)
     started = time.perf_counter()
 
+    game_records = []
     if args.batch_size > 1:
         if args.opponent != "checkpoint":
             raise SystemExit(
@@ -296,6 +343,7 @@ def main():
                 device,
                 batch_size=args.batch_size,
                 progress_every=args.progress_every,
+                game_records=game_records,
             )
         )
     else:
@@ -303,7 +351,7 @@ def main():
         seat_outcomes = {0: Counter(), 1: Counter()}
         pair_scores = []
         completed_games = 0
-        for match_seed in pair_seeds:
+        for pair_index, match_seed in enumerate(pair_seeds):
             pair_points = 0.0
             for candidate_side in (0, 1):
                 opponent_side = 1 - candidate_side
@@ -325,8 +373,9 @@ def main():
                 while True:
                     active = env.active_players()
                     actions = [None, None]
+                    freeze_masks = [None, None]
                     if active[candidate_side]:
-                        actions[candidate_side], candidate_memory = policy_action(
+                        actions[candidate_side], candidate_memory, freeze_masks[candidate_side] = policy_action(
                         candidate,
                         observations[candidate_side],
                         candidate_memory,
@@ -354,14 +403,14 @@ def main():
                                 int(action_rng.integers(len(candidates)))
                             ]
                         else:
-                            actions[opponent_side], opponent_memory = policy_action(
+                            actions[opponent_side], opponent_memory, freeze_masks[opponent_side] = policy_action(
                             opponent_policy,
                             observations[opponent_side],
                             opponent_memory,
                             device,
                             deterministic=not args.stochastic,
                         )
-                    step = env.step(actions[0], actions[1])
+                    step = step_policy_actions(env, actions, freeze_masks)
                     observations = step.observations
                     if not step.terminated:
                         continue
@@ -369,6 +418,9 @@ def main():
                         _completed_match_result(env.core), candidate_side
                     )
                     result_name = {0: "win", 1: "loss", 2: "draw"}[result]
+                    game_records.append(evaluation_game_record(
+                        env.core, pair_index, match_seed, candidate_side, result_name,
+                    ))
                     outcomes[result_name] += 1
                     seat_outcomes[candidate_side][result_name] += 1
                     pair_points += (
@@ -391,10 +443,16 @@ def main():
     score = float(np.mean(pair_scores))
     ci_low, ci_high = confidence_interval(pair_scores)
     payload = {
+        "evaluationRevision": "paired-seat-with-termination-v1-20260905",
+        "terminationCounts": dict(Counter(record['terminationReason'] for record in game_records)),
+        "gameResults": game_records,
         "checkpoint": str(args.checkpoint),
         "checkpointUpdate": checkpoint.get("update"),
         "checkpointTransitions": checkpoint.get("transitions"),
         "checkpointSimulatorRevision": checkpoint.get("simulator_revision"),
+        "candidateActionSchema": END_FREEZE_SCHEMA if candidate.config.end_freeze else PRIMITIVE_SCHEMA,
+        "opponentActionSchema": (END_FREEZE_SCHEMA if opponent_policy.config.end_freeze else PRIMITIVE_SCHEMA)
+        if opponent_policy is not None else PRIMITIVE_SCHEMA,
         "runtimeSimulatorRevision": SIMULATOR_REVISION,
         "opponent": args.opponent,
         "opponentCheckpoint": (
@@ -419,12 +477,14 @@ def main():
         "pairs": args.pairs,
         "games": args.pairs * 2,
         "seed": args.seed,
+        "pairSeeds": list(map(int, pair_seeds)),
         "outcomes": dict(outcomes),
         "seatOutcomes": {
             str(seat): dict(counts) for seat, counts in seat_outcomes.items()
         },
         "pairedMeanScore": score,
         "pairedScore95CI": [ci_low, ci_high],
+        "pairScores": list(map(float, pair_scores)),
         "elapsedSeconds": time.perf_counter() - started,
         "batchSize": args.batch_size,
     }
@@ -432,7 +492,7 @@ def main():
     print(rendered)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n")
+        write_evaluation_report(args.output, payload)
 
 
 if __name__ == "__main__":

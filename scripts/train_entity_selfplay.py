@@ -7,6 +7,7 @@ import argparse
 import copy
 from dataclasses import asdict
 import json
+import math
 from pathlib import Path
 import time
 
@@ -16,6 +17,12 @@ from torch.utils.data import DataLoader
 
 from sapai.turtle_pack import SIMULATOR_REVISION, SOURCE_OF_TRUTH
 from sapai_gym1.replay import ReplaySequenceDataset, collate_replay_sequences
+from sapai_gym1.rl.end_freeze_checkpoint import (
+    END_FREEZE_SCHEMA, PRIMITIVE_SCHEMA, HEAD_PREFIX,
+    initialize_end_freeze_from_primitive, attach_end_freeze_optimizer_group,
+)
+from sapai_gym1.rl.dense_trajectory import DenseTurnSegment, segment_length
+from sapai_gym1.rl.measurement_window import MeasurementWindow
 from sapai_gym1.rl import (
     ActionType,
     BatchedSelfPlayCollector,
@@ -43,6 +50,10 @@ def parse_args():
         help="Shared turn-segment slots used to overlap actors and learner.",
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument('--end-freeze', action='store_true',
+                        help='Experimental joint END_TURN freeze subset; separate action schema.')
+    parser.add_argument('--end-freeze-learning-rate', type=float,
+                        help='Learning rate for the new end-freeze head; defaults to base rate on creation.')
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument(
         "--battle-aux-cost",
@@ -102,10 +113,23 @@ def parse_args():
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--entropy-mode", choices=("legacy_path", "exact_joint"),
+                        help="Opt-in entropy ablation; omitted preserves checkpoint mode.")
     parser.add_argument("--checkpoint-every", type=int, default=50)
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/entity-selfplay"))
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--distributed", action="store_true")
+    parser.add_argument("--lean-policy-execution", action="store_true",
+                        help="Actor-only output path; preserves sampled joint likelihood and RNG calls.")
+    parser.add_argument("--lean-bootstrap", action="store_true",
+                        help="Value-only no-grad bootstrap; objective and optimizer are unchanged.")
+    parser.add_argument("--dense-trajectories", action="store_true",
+                        help="Owned ragged-dense ring copies, without per-transition Python objects.")
+    parser.add_argument("--batched-learner", action="store_true",
+                        help="Masked batched V-trace, auxiliary targets, gathers, and deferred metrics.")
+    parser.add_argument("--inference-telemetry", action="store_true")
+    parser.add_argument("--telemetry-warmup-updates", type=int, default=0)
+    parser.add_argument("--benchmark-window", action="store_true")
     parser.add_argument("--games-per-actor", type=int, default=1)
     parser.add_argument(
         "--inference-batch-delay-ms",
@@ -124,6 +148,8 @@ def parse_args():
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--allow-simulator-mismatch", action="store_true")
     parser.add_argument("--demo-data", nargs="*", type=Path)
+    parser.add_argument('--joint-demo-quality-gate', type=Path,
+                        help='Independent terminal-quality approval for joint corpus; never enabled in entropy A/B')
     parser.add_argument("--demo-batch-size", type=int, default=64)
     parser.add_argument("--demo-until-update", type=int, default=250)
     parser.add_argument("--demo-every", type=int, default=4)
@@ -140,6 +166,15 @@ def parse_args():
         help=(
             "Frozen expert policy kept in the resident league. Defaults to the "
             "initialization checkpoint; on resume it is recovered from league.json."
+        ),
+    )
+    parser.add_argument(
+        "--disable-expert-anchor",
+        action="store_true",
+        help=(
+            "Do not restore the saved expert anchor when resuming. This is "
+            "used after a bounded retention phase so later self-play is not "
+            "permanently anchored to its initialization policy."
         ),
     )
     parser.add_argument(
@@ -178,6 +213,7 @@ def save_checkpoint(
     opponent_aux_cost,
     opponent_module_learning_rate,
     opponent_adapter_learning_rate,
+    learner_primitive_actions=None,
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
@@ -188,9 +224,15 @@ def save_checkpoint(
             "config": asdict(config),
             "update": update,
             "transitions": transitions,
+            "learner_primitive_actions": transitions if learner_primitive_actions is None else int(learner_primitive_actions),
             "source_of_truth": SOURCE_OF_TRUTH,
             "simulator_revision": SIMULATOR_REVISION,
             "training_semantics": {
+                "entropy_mode": config.entropy_mode,
+                "action_schema": END_FREEZE_SCHEMA if config.end_freeze else PRIMITIVE_SCHEMA,
+                "end_freeze_learning_rate": next(
+                    (float(group['lr']) for group in optimizer.param_groups if group.get('name') == 'end_freeze'), None
+                ),
                 "discount_mode": str(discount_mode),
                 "discount": float(discount),
                 "battle_aux_cost": float(battle_aux_cost),
@@ -231,12 +273,35 @@ def demo_update(
     initial_memory = policy.initial_memory(
         batch["actions"].shape[1], device=device
     )
+    for batch_index, recorded_memory in enumerate(
+        batch.get("initial_memories", [])
+    ):
+        if recorded_memory is None:
+            continue
+        recorded_memory = torch.as_tensor(
+            recorded_memory, dtype=torch.float32, device=device
+        )
+        if recorded_memory.shape != (policy.config.memory_dim,):
+            raise ValueError(
+                "Recorded demonstration memory has shape "
+                f"{tuple(recorded_memory.shape)}, expected "
+                f"({policy.config.memory_dim},)"
+            )
+        initial_memory[batch_index].copy_(recorded_memory)
     autocast = (
         torch.autocast("cuda", dtype=torch.bfloat16)
         if device.type == "cuda"
         else torch.autocast("cpu", enabled=False)
     )
     with autocast:
+        if 'memory_prefixes' in batch:
+            from sapai_gym1.rl.joint_demonstrations import reconstruct_memory
+            if len(batch['memory_prefixes']) != batch['actions'].shape[1]:
+                raise ValueError('Missing current-policy memory reconstruction prefixes')
+            for index, prefix in enumerate(batch['memory_prefixes']):
+                if prefix is None:
+                    raise ValueError('Diagnostic stored memories are forbidden in production joint distillation')
+                initial_memory[index].copy_(reconstruct_memory(policy, prefix, device))
         action_type_weights = torch.ones(len(ActionType), device=device)
         action_type_weights[int(ActionType.MOVE)] = move_action_weight
         loss = behavior_cloning_loss(
@@ -248,6 +313,8 @@ def demo_update(
             battle_outcomes=batch["battle_outcomes"],
             returns=batch["returns"],
             action_type_weights=action_type_weights,
+            example_weights=batch.get("example_weights"),
+            end_freeze_masks=batch.get('end_freeze_masks'),
         )
     original_rates = [group["lr"] for group in optimizer.param_groups]
     for group, rate in zip(optimizer.param_groups, original_rates):
@@ -265,10 +332,10 @@ def demo_update(
 
 def behavior_lag_metrics(segments, current_version):
     versions = [
-        transition.behavior_version
+        int(version)
         for segment in segments
-        for transition in segment.transitions
-        if transition.behavior_version >= 0
+        for version in segment_versions(segment)
+        if version >= 0
     ]
     if not versions:
         return 0.0, 0, 0.0
@@ -280,8 +347,46 @@ def behavior_lag_metrics(segments, current_version):
     )
 
 
+def segment_versions(segment):
+    if isinstance(segment, DenseTurnSegment):
+        return segment.behavior_versions.numpy()
+    return [transition.behavior_version for transition in segment.transitions]
+
+
+def max_segment_lag(segment, current_version):
+    versions = segment_versions(segment)
+    if isinstance(versions, np.ndarray):
+        valid = versions[versions >= 0]
+        return max(0, int(current_version) - int(valid.min())) if valid.size else 0
+    return max((max(0, current_version - v) for v in versions if v >= 0), default=0)
+
+
+def action_execution_metrics(segments):
+    """Count executed clicks, not extra synthetic learning examples."""
+    decisions = toggles = joint_ends = changed_ends = 0
+    for segment in segments:
+        if isinstance(segment, DenseTurnSegment):
+            decisions += segment.length
+            masks = segment.freeze_masks.numpy()
+            masks = masks[(masks >= 0) & (segment.actions[:, 0].numpy() == int(ActionType.END_TURN))]
+            joint_ends += len(masks)
+            changed_ends += int(np.count_nonzero(masks))
+            toggles += sum(int(mask).bit_count() for mask in masks)
+            continue
+        for transition in segment.transitions:
+            decisions += 1
+            mask = transition.end_freeze_mask
+            if mask is not None and int(transition.action[0]) == int(ActionType.END_TURN):
+                joint_ends += 1
+                changed_ends += int(bool(mask))
+                toggles += int(mask).bit_count()
+    return decisions + toggles, toggles, joint_ends, changed_ends
+
+
 def main():
     args = parse_args()
+    if args.dense_trajectories and not args.distributed:
+        raise SystemExit('--dense-trajectories requires --distributed')
     if args.move_action_cost < 0:
         raise SystemExit("--move-action-cost must be non-negative")
     if args.demo_move_action_weight <= 0:
@@ -369,6 +474,25 @@ def main():
             num_items=encoder.num_items,
             num_statuses=encoder.num_statuses,
         )
+    if args.entropy_mode is not None and args.entropy_mode != config.entropy_mode:
+        source_checkpoint = args.resume_checkpoint or args.init_checkpoint
+        if source_checkpoint and source_checkpoint.resolve().parent == args.checkpoint_dir.resolve():
+            raise SystemExit('Changing entropy mode requires a separate checkpoint directory')
+        config.entropy_mode = args.entropy_mode
+    upgrading_end_freeze = bool(args.end_freeze and initialization is not None and not config.end_freeze)
+    config.end_freeze = bool(config.end_freeze or args.end_freeze)
+    if initialization is not None and initialization['config'].get('end_freeze', False):
+        if initialization.get('training_semantics', {}).get('action_schema') != END_FREEZE_SCHEMA:
+            raise SystemExit('Joint-action checkpoint lacks the matching action-schema declaration')
+    if config.end_freeze and args.learn_from_resident_sides:
+        raise SystemExit('Joint policies cannot learn foreign resident recurrent representations')
+    if config.end_freeze and args.demo_data and not args.joint_demo_quality_gate:
+        raise SystemExit('Joint demos require --joint-demo-quality-gate; primitive or ungated demos are forbidden')
+    if args.joint_demo_quality_gate and (not config.end_freeze or not args.demo_data):
+        raise SystemExit('--joint-demo-quality-gate requires a joint checkpoint and corpus')
+    if args.end_freeze_learning_rate is not None:
+        if not config.end_freeze or not math.isfinite(args.end_freeze_learning_rate) or args.end_freeze_learning_rate <= 0:
+            raise SystemExit('--end-freeze-learning-rate requires the enabled head and a finite positive rate')
     if args.smoke:
         args.updates = min(args.updates, 2)
         args.num_envs = min(args.num_envs, 2)
@@ -378,7 +502,10 @@ def main():
 
     policy = EntityTransformerPolicy(config).to(device)
     if initialization is not None:
-        policy.load_state_dict(initialization["model"])
+        if upgrading_end_freeze:
+            initialize_end_freeze_from_primitive(policy, initialization['model'])
+        else:
+            policy.load_state_dict(initialization["model"])
         initialization_source = args.init_checkpoint or args.resume_checkpoint
         print(
             f"initialized_from={initialization_source} "
@@ -400,6 +527,7 @@ def main():
             for name, parameter in named_parameters
             if not name.startswith(history_prefixes)
             and not name.startswith("opponent_belief_adapter.")
+            and not name.startswith(HEAD_PREFIX)
         ]
         history_parameters = [
             parameter
@@ -433,10 +561,18 @@ def main():
         )
     else:
         optimizer = torch.optim.AdamW(
-            policy.parameters(), lr=args.learning_rate, eps=1e-5
+            [parameter for name, parameter in policy.named_parameters() if not name.startswith(HEAD_PREFIX)],
+            lr=args.learning_rate, eps=1e-5
         )
+    head_rate = args.end_freeze_learning_rate or args.resume_learning_rate or args.learning_rate
+    # For a migrated resume, restore the original groups BEFORE appending the
+    # new group. For an already-joint resume, construct all groups before load.
+    if config.end_freeze and not (upgrading_end_freeze and resume is not None):
+        attach_end_freeze_optimizer_group(policy, optimizer, head_rate)
     if resume is not None:
         optimizer.load_state_dict(resume["optimizer"])
+        if upgrading_end_freeze:
+            attach_end_freeze_optimizer_group(policy, optimizer, head_rate)
         if args.resume_learning_rate is not None:
             if args.resume_learning_rate <= 0:
                 raise SystemExit("--resume-learning-rate must be positive")
@@ -446,6 +582,9 @@ def main():
                     group["lr"] = args.opponent_module_learning_rate
                 elif group_name == "opponent_adapter":
                     group["lr"] = args.opponent_adapter_learning_rate
+                elif group_name == 'end_freeze':
+                    if args.end_freeze_learning_rate is not None:
+                        group['lr'] = args.end_freeze_learning_rate
                 else:
                     group["lr"] = args.resume_learning_rate
             print(
@@ -461,20 +600,45 @@ def main():
             f"transitions={resume['transitions']}",
             flush=True,
         )
+
+    if config.end_freeze:
+        if args.end_freeze_learning_rate is not None:
+            for group in optimizer.param_groups:
+                if group.get('name') == 'end_freeze':
+                    group['lr'] = args.end_freeze_learning_rate
+        print(f'action_schema={END_FREEZE_SCHEMA} migrated_parent={upgrading_end_freeze}', flush=True)
     demo_loader = None
     demo_iterator = None
     if args.demo_data:
-        demo_dataset = ReplaySequenceDataset(args.demo_data)
+        collate_demos = collate_replay_sequences
+        if config.end_freeze:
+            from sapai_gym1.rl.joint_demonstrations import JointSearchDataset, collate_joint_examples
+            # The teacher owns corpus creation memory. The learner NEVER uses
+            # it directly: current-policy memory is rebuilt from reset above.
+            gate = json.loads(args.joint_demo_quality_gate.read_text())
+            demo_dataset = JointSearchDataset(args.demo_data, checkpoint_sha256=gate['policySHA256'],
+                                              quality_gate=args.joint_demo_quality_gate)
+            collate_demos = collate_joint_examples
+        else:
+            demo_dataset = ReplaySequenceDataset(args.demo_data)
+        demo_batch_size = min(args.demo_batch_size, len(demo_dataset))
         demo_loader = DataLoader(
             demo_dataset,
-            batch_size=min(args.demo_batch_size, len(demo_dataset)),
+            batch_size=demo_batch_size,
             shuffle=True,
-            collate_fn=collate_replay_sequences,
+            collate_fn=collate_demos,
+            # A tiny shuffled tail batch can contain only low-weight soft
+            # PUCT rows. Its summed example weight may be orders of magnitude
+            # below a normal batch, producing an irregular near-no-op update.
+            # Dropping the tail is unbiased across shuffled epochs and keeps
+            # the search/retention update scale predictable.
+            drop_last=len(demo_dataset) > demo_batch_size,
         )
         demo_iterator = iter(demo_loader)
         print(
             f"demo_sequences={len(demo_dataset)} "
-            f"demo_actions={demo_dataset.action_count}",
+            f"demo_actions={demo_dataset.action_count} "
+            f"demo_drop_last={len(demo_dataset) > demo_batch_size}",
             flush=True,
         )
     collector = None
@@ -495,6 +659,8 @@ def main():
             queue_size=args.trajectory_queue_size,
             learn_from_resident_sides=args.learn_from_resident_sides,
             discount_mode=args.discount_mode,
+            lean_policy_execution=args.lean_policy_execution,
+            inference_telemetry=args.inference_telemetry,
         )
         runtime.start()
     else:
@@ -508,6 +674,7 @@ def main():
             gamma=args.discount,
             learn_from_resident_sides=args.learn_from_resident_sides,
             discount_mode=args.discount_mode,
+            lean_policy_execution=args.lean_policy_execution,
         )
     args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     league_path = args.checkpoint_dir / "league.json"
@@ -545,6 +712,7 @@ def main():
     )
 
     transitions = int(resume.get("transitions", 0)) if resume else 0
+    learner_primitive_actions = int(resume.get('learner_primitive_actions', transitions)) if resume else 0
     first_update = int(resume.get("update", 0)) + 1 if resume else 1
     resident_opponents = {}
     resident_member_ids = {}
@@ -572,8 +740,16 @@ def main():
         frozen.eval()
         return frozen
 
-    expert_anchor_path = args.expert_anchor_checkpoint or args.init_checkpoint
-    if expert_anchor_path is None and resume is not None:
+    expert_anchor_path = (
+        None
+        if args.disable_expert_anchor
+        else args.expert_anchor_checkpoint or args.init_checkpoint
+    )
+    if (
+        expert_anchor_path is None
+        and resume is not None
+        and not args.disable_expert_anchor
+    ):
         saved_expert = next(
             (
                 member
@@ -660,9 +836,24 @@ def main():
     elif collector is not None and resident_opponents:
         collector.set_opponent_policy(resident_opponents[max(resident_opponents)])
     starting_transitions = transitions
+    # Keep result attribution after a policy leaves the sampling pool: its
+    # leased matches may still be finishing with the original frozen weights.
+    result_member_ids = dict(resident_member_ids)
     started = time.perf_counter()
+    measurement = MeasurementWindow(args.checkpoint_dir / 'measurement-window.json') if args.benchmark_window else None
+    measured_inference = None
+    measurement_memory = None
     try:
         for update in range(first_update, args.updates + 1):
+            counter_before = transitions
+            if runtime is not None and args.inference_telemetry and update == first_update + args.telemetry_warmup_updates:
+                runtime.batcher.reset_telemetry()
+            if measurement is not None and update == first_update + args.telemetry_warmup_updates:
+                measurement.begin(transitions, learner_primitive_actions, update)
+                if device.type == 'cuda':
+                    torch.cuda.reset_peak_memory_stats(device)
+                    measurement_memory = {'allocatedStart': torch.cuda.memory_allocated(device),
+                                          'reservedStart': torch.cuda.memory_reserved(device)}
             inference_batches_before = (
                 runtime.batcher.inference_batches if runtime is not None else 0
             )
@@ -675,6 +866,9 @@ def main():
             coalesce_seconds_before = (
                 runtime.batcher.coalesce_seconds if runtime is not None else 0.0
             )
+            service_cycles_before = runtime.batcher.service_cycles if runtime is not None else 0
+            coalesce_cycles_before = runtime.batcher.coalesce_cycles if runtime is not None else 0
+            policy_group_seconds_before = runtime.batcher.policy_group_seconds if runtime is not None else 0.0
             collect_started = time.perf_counter()
             ring_before = (
                 runtime.trajectory_ring.stats() if runtime is not None else None
@@ -685,7 +879,7 @@ def main():
             discarded_lag_transitions = 0
             while collected_transitions < args.transitions_per_update:
                 new_segments = (
-                    runtime.collect_segments(args.segments_per_update)
+                    runtime.collect_segments(args.segments_per_update, dense=args.dense_trajectories)
                     if runtime is not None
                     else collector.collect(args.segments_per_update)
                 )
@@ -696,31 +890,20 @@ def main():
                     current_version = runtime.batcher.policy_version
                     accepted_segments = []
                     for segment in new_segments:
-                        versions = [
-                            transition.behavior_version
-                            for transition in segment.transitions
-                            if transition.behavior_version >= 0
-                        ]
-                        max_lag = max(
-                            (
-                                max(0, current_version - version)
-                                for version in versions
-                            ),
-                            default=0,
-                        )
+                        max_lag = max_segment_lag(segment, current_version)
                         if max_lag > args.max_behavior_policy_lag:
                             discarded_lag_segments += 1
-                            discarded_lag_transitions += len(
-                                segment.transitions
-                            )
+                            discarded_lag_transitions += segment_length(segment)
                         else:
                             accepted_segments.append(segment)
                     new_segments = accepted_segments
                 segments.extend(new_segments)
                 collected_transitions += sum(
-                    len(segment.transitions) for segment in new_segments
+                    segment_length(segment) for segment in new_segments
                 )
             collect_seconds = time.perf_counter() - collect_started
+            primitive_count, toggle_count, joint_ends, changed_ends = action_execution_metrics(segments)
+            learner_primitive_actions += primitive_count
             ring_after_collect = (
                 runtime.trajectory_ring.stats() if runtime is not None else None
             )
@@ -734,7 +917,7 @@ def main():
             match_results = runtime.drain_match_results() if runtime is not None else []
             wins = draws = losses = 0
             for policy_id, result in match_results:
-                member_id = resident_member_ids.get(policy_id)
+                member_id = result_member_ids.get(policy_id)
                 if member_id is None:
                     continue
                 outcome = 1 if result == 0 else -1 if result == 1 else 0
@@ -751,6 +934,8 @@ def main():
                 use_bfloat16=True,
                 battle_aux_cost=args.battle_aux_cost,
                 opponent_aux_cost=args.opponent_aux_cost,
+                lean_bootstrap=args.lean_bootstrap,
+                batched_learner=args.batched_learner,
             )
             demo_loss = None
             demo_probability = None
@@ -775,6 +960,7 @@ def main():
             if runtime is not None:
                 runtime.publish_main_policy()
             learn_seconds = time.perf_counter() - learn_started
+            telemetry_started = time.perf_counter()
             ring_after_learn = (
                 runtime.trajectory_ring.stats() if runtime is not None else None
             )
@@ -813,6 +999,14 @@ def main():
                 if inference_batches
                 else 0.0
             )
+            service_cycles = runtime.batcher.service_cycles - service_cycles_before if runtime is not None else 0
+            coalesce_cycles = runtime.batcher.coalesce_cycles - coalesce_cycles_before if runtime is not None else 0
+            group_seconds = runtime.batcher.policy_group_seconds - policy_group_seconds_before if runtime is not None else 0.
+            # Host wall time, including synchronization, NOT CUDA kernel time.
+            # Retain old aliases for existing readers, but expose honest units.
+            service_cycle_ms = 1000. * inference_seconds / service_cycles if service_cycles else 0.
+            coalesce_cycle_ms = 1000. * coalesce_seconds / coalesce_cycles if coalesce_cycles else 0.
+            policy_group_ms = 1000. * group_seconds / inference_batches if inference_batches else 0.
             branch_transitions = transitions - starting_transitions
             update_fps = metrics.transitions / max(
                 collect_seconds + learn_seconds, 1e-9
@@ -823,6 +1017,8 @@ def main():
                 .norm()
                 .cpu()
             )
+            telemetry_seconds = time.perf_counter() - telemetry_started
+            logging_started = time.perf_counter()
             print(
                 f"update={update} transitions={transitions} "
                 f"fps={branch_transitions / elapsed:.1f} "
@@ -836,11 +1032,16 @@ def main():
                 f"learn_s={learn_seconds:.3f} infer_batch={mean_inference_batch:.1f} "
                 f"infer_ms={mean_inference_ms:.2f} "
                 f"coalesce_ms={mean_coalesce_ms:.2f} "
+                f"service_cycles={service_cycles} policy_groups={inference_batches} "
+                f"service_cycle_ms={service_cycle_ms:.2f} coalesce_cycle_ms={coalesce_cycle_ms:.2f} "
+                f"policy_group_ms={policy_group_ms:.2f} "
                 f"ring={ring_before['ready'] if ring_before else 0}/"
                 f"{ring_after_collect['ready'] if ring_after_collect else 0}/"
                 f"{ring_after_learn['ready'] if ring_after_learn else 0} "
                 f"ring_high={ring_after_learn['high_water'] if ring_after_learn else 0} "
                 f"segments={len(segments)} "
+                f"learner_primitives={primitive_count} end_toggles={toggle_count} "
+                f"end_freeze_plans={changed_ends}/{joint_ends} "
                 f"lag={behavior_lag_mean:.2f}/{behavior_lag_max}/"
                 f"{behavior_lag_over_one:.3f} "
                 f"lag_drop={discarded_lag_segments}/"
@@ -850,8 +1051,12 @@ def main():
                 f"demo_p={demo_probability if demo_probability is not None else 0.0:.4f}",
                 flush=True,
             )
+            logging_seconds = time.perf_counter() - logging_started
+            maintenance_started = time.perf_counter()
+            checkpoint_seconds = 0.
             if update % args.checkpoint_every == 0 or update == args.updates:
                 checkpoint = args.checkpoint_dir / f"update-{update:06d}.pt"
+                checkpoint_started = time.perf_counter()
                 save_checkpoint(
                     checkpoint,
                     policy,
@@ -859,6 +1064,7 @@ def main():
                     config,
                     update,
                     transitions,
+                    learner_primitive_actions=learner_primitive_actions,
                     discount_mode=args.discount_mode,
                     discount=args.discount,
                     battle_aux_cost=args.battle_aux_cost,
@@ -870,6 +1076,7 @@ def main():
                         args.opponent_adapter_learning_rate
                     ),
                 )
+                checkpoint_seconds = time.perf_counter() - checkpoint_started
                 member_id = f"historical-{update:06d}"
                 league.add(
                     LeagueMember(
@@ -884,6 +1091,7 @@ def main():
                 if runtime is not None:
                     resident_opponents[next_policy_id] = historical_opponent
                     resident_member_ids[next_policy_id] = member_id
+                    result_member_ids[next_policy_id] = member_id
                     next_policy_id += 1
                     retained_member_ids = {
                         member.member_id
@@ -927,9 +1135,46 @@ def main():
                     priorities,
                     main_probability=sum(priorities),
                 )
+                if (
+                    update % args.checkpoint_every == 0
+                    or update == args.updates
+                ):
+                    priority_total = sum(priorities)
+                    rows = ["main:0.5000"]
+                    for policy_id, priority in zip(
+                        resident_opponents, priorities
+                    ):
+                        member_id = resident_member_ids[policy_id]
+                        probability = (
+                            0.5 * priority / priority_total
+                            if priority_total > 0
+                            else 0.0
+                        )
+                        rows.append(
+                            f"{member_id}:{probability:.4f}:"
+                            f"wr={league.win_rate('main', member_id):.3f}"
+                        )
+                    print("opponent_sampling=" + ",".join(rows), flush=True)
+            if measurement is not None:
+                measurement.record(update=update, before=counter_before, after=transitions,
+                    decisions=metrics.transitions, primitives=primitive_count, collect=collect_seconds,
+                    learn=learn_seconds, logging=logging_seconds, checkpoint=checkpoint_seconds,
+                    maintenance=time.perf_counter()-maintenance_started-checkpoint_seconds,
+                    telemetry=telemetry_seconds)
+                if update == args.updates:
+                    if measurement_memory is not None:
+                        measurement_memory.update(allocatedEnd=torch.cuda.memory_allocated(device),
+                            reservedEnd=torch.cuda.memory_reserved(device), peakAllocated=torch.cuda.max_memory_allocated(device))
+                    measured = measurement.finish(transitions, learner_primitive_actions,
+                        inference=runtime.batcher.telemetry_snapshot if runtime is not None else None,
+                        memory=measurement_memory)
+                    measured_inference = measured['inference'] if measured else None
     finally:
         if runtime is not None:
             runtime.stop()
+            if args.inference_telemetry:
+                telemetry = measured_inference if measured_inference is not None else runtime.batcher.telemetry_snapshot()
+                (args.checkpoint_dir / 'inference-telemetry.json').write_text(json.dumps(telemetry, indent=2) + '\n')
 
     print(
         f"finished updates={args.updates} transitions={transitions} "

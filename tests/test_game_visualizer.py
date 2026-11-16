@@ -8,6 +8,7 @@ from sapai import Food, Pet, Player, Shop, Team
 from sapai_gym1.rl.game_trace import (
     action_snapshot,
     audit_state,
+    pet_snapshot,
     player_snapshot,
     render_game_html,
     state_changes,
@@ -16,6 +17,24 @@ from sapai_gym1.rl import ActionType, AutoregressiveAction
 
 
 class TestGameVisualizer(unittest.TestCase):
+    def test_move_caption_describes_insertion_not_a_swap(self):
+        player = Player(team=Team(['ant', 'beaver', 'cricket', 'duck', 'fish']))
+        action = AutoregressiveAction(ActionType.MOVE, 0, 4)
+        description = action_snapshot(player, action)['description']
+        self.assertIn('Move Ant from team 0 to team 4', description)
+        self.assertIn('shifting intervening pets', description)
+        self.assertNotIn('Swap', description)
+        player.swap(0, 4)
+        self.assertEqual([slot.pet.name for slot in player.team],
+                         ['pet-beaver', 'pet-cricket', 'pet-duck', 'pet-fish', 'pet-ant'])
+
+    def test_generated_pet_snapshot_has_gameplay_tier_one(self):
+        bus = Pet("bus")
+        bus._attack = 5
+        bus._health = 3
+        self.assertEqual(bus.tier, 1)
+        self.assertEqual(pet_snapshot(bus)["tier"], 1)
+
     def make_player(self):
         shop = Shop(
             slots=[

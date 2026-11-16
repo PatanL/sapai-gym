@@ -512,6 +512,8 @@ class SuperAutoPetsEnv(gym.Env):
                         for team_idx, team_slot in enumerate(player.team):
                             if team_slot.empty:
                                 continue
+                            if not team_slot.pet.can_eat(shop_slot.obj):
+                                continue
                             action_num = self.ACTION_BASE_NUM["buy_food"] + (food_index * self.MAX_TEAM_PETS) + team_idx
                             action_dict[action_num] = (player.buy_food, shop_idx, team_idx)
                 food_index += 1

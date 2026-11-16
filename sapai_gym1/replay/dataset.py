@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 from sapai import Food, Pet, Player, Shop, Team
 from sapai.data import data
 from sapai.turtle_pack import SIMULATOR_REVISION
-from sapai_gym1.SuperAutoPetsEnv import SuperAutoPetsEnv
+from sapai_gym1 import SuperAutoPetsEnv
 from sapai_gym1.rl.action_schema import MAX_SHOP_SLOTS
 from sapai_gym1.rl.entity_observation import EntityObservationEncoder
 
@@ -92,6 +92,8 @@ class ReplayExampleDataset(Dataset):
                     if not line.strip():
                         continue
                     example = json.loads(line)
+                    if 'recordSchema' in example or 'jointAction' in example:
+                        raise ValueError('Typed JointAction records require the joint-aware loader; primitive replay loading is forbidden')
                     recorded_revision = (
                         example.get("validation", {}).get(
                             "simulatorRevision"
@@ -163,11 +165,22 @@ class ReplayExampleDataset(Dataset):
         else:
             battle_outcome = -1
             return_target = float("nan")
+        weight = float(example.get("teacherWeight", 1.0))
+        if not np.isfinite(weight) or weight <= 0:
+            raise ValueError("teacherWeight must be finite and positive")
         return {
             "observation": observation,
             "action": np.asarray(example["action"], dtype=np.int64),
             "battle_outcome": int(battle_outcome),
             "return": np.float32(return_target),
+            "weight": np.float32(weight),
+            "initial_memory": (
+                None
+                if example.get("initialMemory") is None
+                else np.asarray(
+                    example["initialMemory"], dtype=np.float32
+                )
+            ),
             "replay_id": example["replay_id"],
         }
 
@@ -191,6 +204,10 @@ def collate_replay_examples(batch):
             [[item["return"] for item in batch]], dtype=torch.float32
         ),
         "valid_mask": torch.ones(1, len(batch), dtype=torch.bool),
+        "example_weights": torch.tensor(
+            [[item.get("weight", 1.0) for item in batch]], dtype=torch.float32
+        ),
+        "initial_memories": [item.get("initial_memory") for item in batch],
         "replay_ids": [item["replay_id"] for item in batch],
     }
 
@@ -265,6 +282,9 @@ def collate_replay_sequences(batch):
         (time_steps, batch_size), float("nan"), dtype=torch.float32
     )
     valid_mask = torch.zeros(time_steps, batch_size, dtype=torch.bool)
+    example_weights = torch.zeros(
+        time_steps, batch_size, dtype=torch.float32
+    )
     for batch_index, sequence in enumerate(batch):
         for time_index in range(time_steps):
             item = sequence[min(time_index, len(sequence) - 1)]
@@ -275,12 +295,19 @@ def collate_replay_sequences(batch):
                     "battle_outcome"
                 ]
                 returns[time_index, batch_index] = float(item["return"])
+                example_weights[time_index, batch_index] = float(
+                    item.get("weight", 1.0)
+                )
     return {
         "observations": observations,
         "actions": actions,
         "battle_outcomes": battle_outcomes,
         "returns": returns,
         "valid_mask": valid_mask,
+        "example_weights": example_weights,
+        "initial_memories": [
+            sequence[0].get("initial_memory") for sequence in batch
+        ],
         "replay_ids": [sequence[0]["replay_id"] for sequence in batch],
         "sequence_lengths": torch.tensor(
             [len(sequence) for sequence in batch], dtype=torch.long

@@ -13,6 +13,10 @@ from torch.nn import functional as F
 from .action_schema import ActionType, AutoregressiveAction
 from .model import EntityTransformerPolicy
 from .selfplay_env import ParallelSelfPlayEnv
+from .end_freeze import step_with_end_freeze
+from .learner_batch import pack_learner_batch
+from .dense_trajectory import segment_length
+from .batched_learner import batched_sequence_losses, DeviceLearnerMetrics
 from .vtrace import ImpalaLossOutput, impala_actor_critic_loss
 
 
@@ -24,6 +28,8 @@ class Transition:
     reward: float = 0.0
     discount: float = 0.99
     behavior_version: int = -1
+    # None is legacy primitive likelihood, NOT a zero-toggle joint action.
+    end_freeze_mask: int | None = None
 
 
 @dataclass
@@ -83,8 +89,9 @@ class BatchedSelfPlayCollector:
         use_bfloat16: bool = True,
         opponent_policy: EntityTransformerPolicy | None = None,
         move_action_cost: float = 0.0,
-        learn_from_resident_sides: bool = True,
+        learn_from_resident_sides: bool = False,
         discount_mode: str = "per_action",
+        lean_policy_execution: bool = False,
     ):
         self.policy = policy
         self.device = torch.device(device)
@@ -95,11 +102,14 @@ class BatchedSelfPlayCollector:
         if discount_mode not in {"per_action", "per_turn"}:
             raise ValueError("discount_mode must be 'per_action' or 'per_turn'")
         self.discount_mode = discount_mode
+        self.lean_policy_execution = bool(lean_policy_execution)
         if move_action_cost < 0:
             raise ValueError("move_action_cost must be non-negative")
         self.move_action_cost = float(move_action_cost)
         self.rng = np.random.default_rng(seed)
         self.envs = [ParallelSelfPlayEnv() for _ in range(num_envs)]
+        self.game_opponents = [opponent_policy for _ in self.envs]
+        self.game_started = [False for _ in self.envs]
         self.observations = [
             env.reset(seed=int(self.rng.integers(0, 2**31 - 1)))
             for env in self.envs
@@ -119,12 +129,20 @@ class BatchedSelfPlayCollector:
     def set_opponent_policy(
         self, opponent_policy: EntityTransformerPolicy | None
     ) -> None:
-        """Use a frozen historical opponent; ``None`` means symmetric latest-v-latest."""
+        """Choose the opponent for new matches, retaining started assignments.
+
+        ``None`` means symmetric latest-v-latest. Unstarted games can adopt
+        the assignment immediately; an existing resident's recurrent state
+        must never be passed to a different frozen network mid-match.
+        """
 
         self.opponent_policy = opponent_policy
         if opponent_policy is not None:
             opponent_policy.eval()
             opponent_policy.requires_grad_(False)
+        for index, started in enumerate(self.game_started):
+            if not started:
+                self.game_opponents[index] = opponent_policy
 
     @torch.no_grad()
     def collect(self, num_segments: int) -> list[TurnSegment]:
@@ -144,14 +162,15 @@ class BatchedSelfPlayCollector:
                     memories.append(self.memories[env_index, side])
 
             action_lookup = {}
+            freeze_lookup = {}
             # Batch by policy identity.  Latest-v-latest uses one large batch;
             # a frozen historical opponent uses a second batch without
             # entangling its recurrent state with the learner.
             policy_groups = {}
-            for batch_index, (_, side) in enumerate(references):
+            for batch_index, (env_index, side) in enumerate(references):
                 behavior_policy = (
-                    self.opponent_policy
-                    if side == 1 and self.opponent_policy is not None
+                    self.game_opponents[env_index]
+                    if side == 1 and self.game_opponents[env_index] is not None
                     else self.policy
                 )
                 policy_groups.setdefault(behavior_policy, []).append(batch_index)
@@ -168,16 +187,24 @@ class BatchedSelfPlayCollector:
                     else nullcontext()
                 )
                 with autocast:
-                    output = behavior_policy(batch, memory=memory_batch)
+                    options = ({'allow_end_freeze': True}
+                               if getattr(behavior_policy.config, 'end_freeze', False) else {})
+                    options['entropy_mode_override'] = 'legacy_path'
+                    output = (behavior_policy.act(batch, memory=memory_batch) if self.lean_policy_execution
+                              else behavior_policy(batch, memory=memory_batch, **options))
                 for group_index, batch_index in enumerate(indices):
                     env_index, side = references[batch_index]
+                    self.game_started[env_index] = True
                     action = output.actions[group_index].detach().cpu().numpy()
+                    masks = getattr(output, 'end_freeze_mask', None)
+                    freeze_mask = None if masks is None else int(masks[group_index].cpu())
+                    freeze_lookup[(env_index, side)] = freeze_mask
                     action_lookup[(env_index, side)] = AutoregressiveAction(
                         *map(int, action)
                     )
                     learns_from_side = (
                         side == 0
-                        or self.opponent_policy is None
+                        or self.game_opponents[env_index] is None
                         or self.learn_from_resident_sides
                     )
                     if learns_from_side:
@@ -188,6 +215,7 @@ class BatchedSelfPlayCollector:
                                 behavior_log_prob=float(
                                     output.log_prob[group_index].cpu()
                                 ),
+                                end_freeze_mask=freeze_mask,
                                 reward=action_shaping_reward(
                                     action, self.move_action_cost
                                 ),
@@ -206,7 +234,13 @@ class BatchedSelfPlayCollector:
                     action_lookup[(env_index, side)] if active[side] else None
                     for side in range(2)
                 ]
-                step = env.step(actions[0], actions[1])
+                masks = [freeze_lookup.get((env_index, side)) for side in range(2)]
+                if any(mask is not None for mask in masks):
+                    step = step_with_end_freeze(
+                        env, *actions, mask_ids=tuple(0 if mask is None else mask for mask in masks)
+                    ).result
+                else:
+                    step = env.step(actions[0], actions[1])
                 self.observations[env_index] = step.observations
                 if not step.battle_resolved:
                     continue
@@ -215,7 +249,7 @@ class BatchedSelfPlayCollector:
                     buffer = self.buffers[env_index][side]
                     learns_from_side = (
                         side == 0
-                        or self.opponent_policy is None
+                        or self.game_opponents[env_index] is None
                         or self.learn_from_resident_sides
                     )
                     if not learns_from_side:
@@ -252,6 +286,8 @@ class BatchedSelfPlayCollector:
                     )
 
                 if step.terminated:
+                    self.game_opponents[env_index] = self.opponent_policy
+                    self.game_started[env_index] = False
                     self.observations[env_index] = env.reset(
                         seed=int(self.rng.integers(0, 2**31 - 1))
                     )
@@ -275,55 +311,26 @@ def _learner_update_batch(
     loss_scale: float = 1.0,
     battle_aux_cost: float = 0.05,
     opponent_aux_cost: float = 0.1,
+    lean_bootstrap: bool = False,
+    batched_learner: bool = False,
+    defer_metrics: bool = False,
 ) -> LearnerMetrics:
     if not segments:
         raise ValueError("At least one segment is required")
     device = torch.device(device)
     policy.train()
     use_bfloat16 = use_bfloat16 and device.type == "cuda"
-    time_steps = max(len(segment.transitions) for segment in segments)
-    batch_size = len(segments)
-    observations_by_time = []
-    actions = torch.zeros(time_steps, batch_size, 3, dtype=torch.long, device=device)
-    behavior_log_probs = torch.zeros(time_steps, batch_size, device=device)
-    rewards = torch.zeros(time_steps, batch_size, device=device)
-    discounts = torch.zeros(time_steps, batch_size, device=device)
-    valid_mask = torch.zeros(time_steps, batch_size, device=device)
-
-    for time_index in range(time_steps):
-        time_observations = []
-        for batch_index, segment in enumerate(segments):
-            if time_index < len(segment.transitions):
-                transition = segment.transitions[time_index]
-                valid_mask[time_index, batch_index] = 1.0
-                actions[time_index, batch_index] = torch.as_tensor(
-                    transition.action, device=device
-                )
-                behavior_log_probs[time_index, batch_index] = (
-                    transition.behavior_log_prob
-                )
-                rewards[time_index, batch_index] = transition.reward
-                discounts[time_index, batch_index] = transition.discount
-                time_observations.append(transition.observation)
-            else:
-                # A legal copied observation/action keeps categorical
-                # distributions well-defined; valid_mask removes its loss.
-                transition = segment.transitions[-1]
-                actions[time_index, batch_index] = torch.as_tensor(
-                    transition.action, device=device
-                )
-                time_observations.append(transition.observation)
-        observations_by_time.append(stack_observations(time_observations, device))
-
-    memory = torch.stack(
+    joint_actions = bool(getattr(policy.config, 'end_freeze', False))
+    packed = pack_learner_batch(segments, device, joint_actions=joint_actions, include_metadata=batched_learner)
+    lengths = [segment_length(s) for s in segments]
+    actions = packed.actions
+    behavior_log_probs = packed.behavior_log_probs
+    rewards, discounts = packed.rewards, packed.discounts
+    freeze_masks = packed.freeze_masks
+    observation_sequence = packed.observations
+    memory = packed.initial_memories if packed.initial_memories is not None else torch.stack(
         [segment.initial_memory for segment in segments]
     ).to(device)
-    observation_sequence = {
-        key: torch.stack(
-            [observations_by_time[t][key] for t in range(time_steps)]
-        )
-        for key in observations_by_time[0]
-    }
     def autocast_context():
         return (
             torch.autocast("cuda", dtype=torch.bfloat16)
@@ -336,24 +343,34 @@ def _learner_update_batch(
             observation_sequence,
             initial_memory=memory,
             actions=actions,
+            **({'end_freeze_masks': freeze_masks} if joint_actions else {}),
+            forecast_first_only=batched_learner,
         )
-    final_memories = torch.stack(
-        [
-            sequence_output.memory_states[
-                len(segment.transitions) - 1, batch_index
+    if batched_learner:
+        final_memories = sequence_output.memory_states[packed.lengths - 1, torch.arange(len(segments), device=device)]
+    else:
+        final_memories = torch.stack(
+            [
+                sequence_output.memory_states[lengths[batch_index] - 1, batch_index]
+                for batch_index in range(len(segments))
             ]
-            for batch_index, segment in enumerate(segments)
-        ]
-    )
+        )
 
-    bootstrap_observation = stack_observations(
+    bootstrap_observation = packed.bootstrap_observations if packed.bootstrap_observations is not None else stack_observations(
         [segment.bootstrap_observation for segment in segments], device
     )
     with autocast_context():
-        bootstrap_value = policy(
-            bootstrap_observation, memory=final_memories, deterministic=True
-        ).value
-    terminal = torch.tensor(
+        if lean_bootstrap:
+            # Targets are detached by V-trace. Avoid constructing a discarded
+            # bootstrap graph and do not decode any actions/entropy/forecasts.
+            with torch.no_grad():
+                bootstrap_value = policy.value_only(bootstrap_observation, memory=final_memories)
+        else:
+            bootstrap_value = policy(
+                bootstrap_observation, memory=final_memories, deterministic=True,
+                **({'allow_end_freeze': True} if joint_actions else {}),
+            ).value
+    terminal = packed.terminals if packed.terminals is not None else torch.tensor(
         [segment.terminal for segment in segments],
         dtype=torch.bool,
         device=device,
@@ -362,6 +379,50 @@ def _learner_update_batch(
         terminal, torch.zeros_like(bootstrap_value), bootstrap_value
     )
 
+    if batched_learner:
+        losses = batched_sequence_losses(policy, sequence_output, packed, bootstrap_value,
+                                         battle_aux_cost, opponent_aux_cost)
+    else:
+        losses = _legacy_sequence_losses(policy, sequence_output, packed, bootstrap_value,
+                                         segments, lengths, device, autocast_context,
+                                         battle_aux_cost, opponent_aux_cost)
+    total_loss, policy_loss, value_loss, entropy_loss, battle_aux_loss, opponent_aux_loss = losses
+    transition_count = sum(lengths)
+    if zero_grad:
+        optimizer.zero_grad(set_to_none=True)
+    (total_loss * loss_scale).backward()
+    if optimizer_step:
+        grad_norm = nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+        optimizer.step()
+    else:
+        grad_norm = torch.tensor(0.0)
+    if batched_learner:
+        metrics = DeviceLearnerMetrics(torch.stack([total_loss, policy_loss, value_loss,
+                                                   battle_aux_loss, opponent_aux_loss, -entropy_loss]).detach(),
+                                      transition_count)
+        return metrics if defer_metrics else _metrics_on_cpu(metrics, grad_norm)
+    return LearnerMetrics(
+        total_loss=float(total_loss.detach().cpu()),
+        policy_loss=float(policy_loss.detach().cpu()),
+        value_loss=float(value_loss.detach().cpu()),
+        battle_aux_loss=float(battle_aux_loss.detach().cpu()),
+        opponent_aux_loss=float(opponent_aux_loss.detach().cpu()),
+        entropy=float((-entropy_loss).detach().cpu()),
+        transitions=transition_count,
+        grad_norm=float(torch.as_tensor(grad_norm).detach().cpu()),
+    )
+
+
+def _metrics_on_cpu(metrics, grad_norm):
+    values = torch.cat((metrics.values, torch.as_tensor(grad_norm, device=metrics.values.device).reshape(1))).cpu().tolist()
+    return LearnerMetrics(*values[:6], transitions=metrics.transitions, grad_norm=values[6])
+
+
+
+def _legacy_sequence_losses(policy, sequence_output, packed, bootstrap_value, segments,
+                            lengths, device, autocast_context, battle_aux_cost, opponent_aux_cost):
+    behavior_log_probs = packed.behavior_log_probs
+    rewards, discounts = packed.rewards, packed.discounts
     target_log_probs = sequence_output.log_prob
     entropies = sequence_output.entropy
     values = sequence_output.value
@@ -372,7 +433,7 @@ def _learner_update_batch(
     transition_count = 0
     with autocast_context():
         for batch_index, segment in enumerate(segments):
-            length = len(segment.transitions)
+            length = lengths[batch_index]
             transition_count += length
             segment_losses.append(
                 impala_actor_critic_loss(
@@ -385,7 +446,7 @@ def _learner_update_batch(
                     bootstrap_value=bootstrap_value[batch_index : batch_index + 1],
                 )
             )
-    weights = [len(segment.transitions) / transition_count for segment in segments]
+    weights = [length / transition_count for length in lengths]
     total_loss = sum(
         weight * segment_loss.total
         for weight, segment_loss in zip(weights, segment_losses)
@@ -408,7 +469,7 @@ def _learner_update_batch(
         for batch_index, segment in enumerate(segments):
             if segment.battle_outcome is None:
                 continue
-            length = len(segment.transitions)
+            length = lengths[batch_index]
             battle_logits.append(
                 sequence_output.battle_logits[:length, batch_index]
             )
@@ -500,25 +561,7 @@ def _learner_update_batch(
         total_loss = total_loss + opponent_aux_cost * opponent_aux_loss
     else:
         opponent_aux_loss = torch.zeros((), device=device)
-    if zero_grad:
-        optimizer.zero_grad(set_to_none=True)
-    (total_loss * loss_scale).backward()
-    if optimizer_step:
-        grad_norm = nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        optimizer.step()
-    else:
-        grad_norm = torch.tensor(0.0)
-    return LearnerMetrics(
-        total_loss=float(total_loss.detach().cpu()),
-        policy_loss=float(policy_loss.detach().cpu()),
-        value_loss=float(value_loss.detach().cpu()),
-        battle_aux_loss=float(battle_aux_loss.detach().cpu()),
-        opponent_aux_loss=float(opponent_aux_loss.detach().cpu()),
-        entropy=float((-entropy_loss).detach().cpu()),
-        transitions=transition_count,
-        grad_norm=float(torch.as_tensor(grad_norm).detach().cpu()),
-    )
-
+    return total_loss, policy_loss, value_loss, entropy_loss, battle_aux_loss, opponent_aux_loss
 
 def learner_update(
     policy: EntityTransformerPolicy,
@@ -530,6 +573,8 @@ def learner_update(
     bucket_by_length: bool = True,
     battle_aux_cost: float = 0.05,
     opponent_aux_cost: float = 0.1,
+    lean_bootstrap: bool = False,
+    batched_learner: bool = False,
 ) -> LearnerMetrics:
     """Update from turn segments, bucketing lengths to avoid padded attention."""
 
@@ -543,11 +588,13 @@ def learner_update(
             use_bfloat16=use_bfloat16,
             battle_aux_cost=battle_aux_cost,
             opponent_aux_cost=opponent_aux_cost,
+            lean_bootstrap=lean_bootstrap,
+            batched_learner=batched_learner,
         )
 
     buckets = {}
     for segment in segments:
-        length = len(segment.transitions)
+        length = segment_length(segment)
         upper_bound = 1 << max(0, (length - 1).bit_length())
         buckets.setdefault(upper_bound, []).append(segment)
 
@@ -559,14 +606,14 @@ def learner_update(
             bucket_groups.append(bucket[start : start + 128])
 
     total_transitions = sum(
-        len(segment.transitions)
+        segment_length(segment)
         for group in bucket_groups
         for segment in group
     )
     optimizer.zero_grad(set_to_none=True)
     metrics = []
     for group in bucket_groups:
-        group_transitions = sum(len(segment.transitions) for segment in group)
+        group_transitions = sum(segment_length(segment) for segment in group)
         metrics.append(
             _learner_update_batch(
                 policy,
@@ -580,10 +627,17 @@ def learner_update(
                 loss_scale=group_transitions / total_transitions,
                 battle_aux_cost=battle_aux_cost,
                 opponent_aux_cost=opponent_aux_cost,
+                lean_bootstrap=lean_bootstrap,
+                batched_learner=batched_learner,
+                defer_metrics=batched_learner,
             )
         )
     grad_norm = nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
     optimizer.step()
+
+    if batched_learner:
+        aggregated = sum(metric.values * (metric.transitions / total_transitions) for metric in metrics)
+        return _metrics_on_cpu(DeviceLearnerMetrics(aggregated, total_transitions), grad_norm)
 
     def weighted(field):
         return sum(

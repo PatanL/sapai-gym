@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from sapai import Team
+from sapai import Pet, Team
 from sapai_gym1 import SuperAutoPetsEnv
 from sapai_gym1.rl import (
     ActionType,
@@ -46,6 +46,17 @@ def tensor_batch(observation, batch_size=2, device="cpu"):
 
 
 class TestActionSchema(unittest.TestCase):
+    def test_generated_pet_tier_is_observed_as_tier_one(self):
+        encoder = EntityObservationEncoder()
+        bus = Pet("bus")
+        bus._attack = 5
+        bus._health = 3
+        history = encoder._encode_opponent_history(None, Team([bus]))
+        self.assertAlmostEqual(
+            float(history["opponent_history_numeric"][1, 0, 4]),
+            1.0 / 6.0,
+        )
+
     def test_every_flat_action_round_trips(self):
         for flat_action in range(FlatActionCodec.NUM_ACTIONS):
             decoded = FlatActionCodec.decode(flat_action)
@@ -336,6 +347,50 @@ class TestEntityTransformer(unittest.TestCase):
                 action_type_weights=torch.zeros(len(ActionType)),
             )
 
+    def test_behavior_cloning_combines_example_and_action_type_weights(self):
+        encoder = self.env.encoder
+        model = EntityTransformerPolicy(
+            EntityTransformerConfig(
+                num_items=encoder.num_items,
+                num_statuses=encoder.num_statuses,
+                d_model=64,
+                nhead=4,
+                num_layers=2,
+                dim_feedforward=128,
+                memory_dim=96,
+            )
+        )
+        batch = tensor_batch(self.observation, batch_size=2)
+        sequence = {key: value.unsqueeze(0) for key, value in batch.items()}
+        actions = torch.tensor(
+            [[[ActionType.MOVE, 0, 0], [ActionType.ROLL, 10, 5]]]
+        )
+        sequence["type_mask"][0, :, ActionType.MOVE] = True
+        sequence["source_mask"][0, :, ActionType.MOVE, 0] = True
+        sequence["target_mask"][0, :, ActionType.MOVE, 0, 0] = True
+        type_weights = torch.ones(len(ActionType))
+        type_weights[ActionType.MOVE] = 4.0
+        example_weights = torch.tensor([[0.25, 2.0]])
+        initial_memory = model.initial_memory(2)
+        evaluated = model.evaluate_sequence(
+            sequence, initial_memory, actions
+        )
+        expected = -(
+            evaluated.log_prob[0, 0] + 2.0 * evaluated.log_prob[0, 1]
+        ) / 3.0
+        loss = behavior_cloning_loss(
+            model,
+            sequence,
+            actions,
+            initial_memory,
+            valid_mask=torch.ones(1, 2, dtype=torch.bool),
+            battle_cost=0.0,
+            value_cost=0.0,
+            action_type_weights=type_weights,
+            example_weights=example_weights,
+        )
+        self.assertTrue(torch.allclose(loss.action, expected))
+
 
 class TestVTraceAndLeague(unittest.TestCase):
     def test_optional_move_action_cost_only_penalizes_move(self):
@@ -422,16 +477,18 @@ class TestVTraceAndLeague(unittest.TestCase):
                     created_step=100 + index,
                 )
             )
+        league.promote("champion-1", "champion-1.pt", created_step=999)
 
         resident_ids = [
             member.member_id for member in league.resident_members(4)
         ]
         self.assertEqual(
-            resident_ids[:5],
-            [f"exploiter-{index}" for index in range(5)],
+            resident_ids[:6],
+            [f"exploiter-{index}" for index in range(5)]
+            + ["champion-1"],
         )
         self.assertEqual(
-            resident_ids[5:],
+            resident_ids[6:],
             [
                 "historical-3",
                 "historical-4",
@@ -441,7 +498,8 @@ class TestVTraceAndLeague(unittest.TestCase):
         )
         self.assertEqual(
             [member.member_id for member in league.resident_members(0)],
-            [f"exploiter-{index}" for index in range(5)],
+            [f"exploiter-{index}" for index in range(5)]
+            + ["champion-1"],
         )
 
 
@@ -724,7 +782,7 @@ class TestParallelSelfPlay(unittest.TestCase):
         self.assertEqual(ring.stats()["read"], 1)
         ring.close()
 
-    def test_stale_resident_request_falls_back_to_main_atomically(self):
+    def test_missing_resident_refuses_to_reinterpret_its_memory_as_main(self):
         env = ParallelSelfPlayEnv()
         observation = env.reset(seed=29)[0]
         context = mp.get_context("spawn")
@@ -756,22 +814,9 @@ class TestParallelSelfPlay(unittest.TestCase):
         )
         self.assertAlmostEqual(batcher.max_batch_delay, 0.005)
         batcher.policy_version = 3
-        batcher._serve([0])
-        self.assertGreater(batcher.inference_seconds, 0.0)
-        self.assertEqual(int(shared.policy_versions[0]), 3)
-        self.assertTrue(shared.response_event.is_set())
-        action = AutoregressiveAction(*map(int, shared.actions[0]))
-        self.assertTrue(observation["type_mask"][action.action_type])
-        self.assertTrue(
-            observation["source_mask"][
-                action.action_type, action.source
-            ]
-        )
-        self.assertTrue(
-            observation["target_mask"][
-                action.action_type, action.source, action.target
-            ]
-        )
+        with self.assertRaisesRegex(RuntimeError, "cross-policy memory"):
+            batcher._serve([0])
+        self.assertFalse(shared.response_event.is_set())
 
 
 if __name__ == "__main__":

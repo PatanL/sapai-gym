@@ -41,32 +41,31 @@ def opponent_generator(num_turns):
     opponents = biggest_numbers_horizontal_opp_generator(25)
     return opponents
 
-print(biggest_numbers_horizontal_opp_generator(25))
-print(biggest_numbers_horizontal_opp_generator(25))
+if __name__ == "__main__":
+    print(biggest_numbers_horizontal_opp_generator(25))
+    print(biggest_numbers_horizontal_opp_generator(25))
 
-env = SuperAutoPetsEnv(opponent_generator, valid_actions_only=False)
-print("Observation space:", env.observation_space)
-print("Observation space shape:", env.observation_space.shape)
-print("Observation space dtype:", env.observation_space.dtype)
+    env = SuperAutoPetsEnv(opponent_generator, valid_actions_only=False)
+    print("Observation space:", env.observation_space)
+    print("Observation space shape:", env.observation_space.shape)
+    print("Observation space dtype:", env.observation_space.dtype)
 
-obs, _ = env.reset()
-print("Reset observation shape:", obs.shape)
-print("Reset observation dtype:", obs.dtype)
-print("Is in observation space:", env.observation_space.contains(obs))
+    obs, _ = env.reset()
+    print("Reset observation shape:", obs.shape)
+    print("Reset observation dtype:", obs.dtype)
+    print("Is in observation space:", env.observation_space.contains(obs))
 
-check_env(env)
+    check_env(env)
 
+    for step_num in range(1000):
+        if step_num % 100 == 0:
+            print(f"Step {step_num}")
 
-for step_num in range(1000):
-    if step_num % 100 == 0:
-        print(f"Step {step_num}")
+        # Random actions
+        action = env.action_space.sample()  # make this learnable by the agent
+        obs, reward, terminated, truncated, info = env.step(action)
 
-    # Random actions
-    action = env.action_space.sample() # make this learnable by the agent
-    obs, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            obs, info = env.reset()
 
-
-    if terminated or truncated:
-        obs, info = env.reset()
-
-env.close()
+    env.close()

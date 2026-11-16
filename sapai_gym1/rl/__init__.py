@@ -48,6 +48,23 @@ from .distributed import (
 )
 from .imitation import ImitationLossOutput, behavior_cloning_loss
 from .guide_teacher import GuideDecision, TurtleGuideTeacher
+from .critic_calibration import AdditiveCriticCalibrator
+from .opponent_belief import (
+    OPPONENT_BELIEF_VERSION,
+    OpponentBeliefMix,
+    OpponentBoardBelief,
+)
+from .interactive_evaluation import (
+    InteractiveContinuationResult,
+    InteractiveSelfPlayEvaluator,
+)
+from .puct_search import (
+    PUCT_VERSION,
+    PUCTConfig,
+    PUCTSearchResult,
+    PUCTTrainingTarget,
+    StochasticPUCTSearch,
+)
 
 __all__ = [
     "ActionType",
@@ -92,4 +109,15 @@ __all__ = [
     "behavior_cloning_loss",
     "GuideDecision",
     "TurtleGuideTeacher",
+    "AdditiveCriticCalibrator",
+    "OPPONENT_BELIEF_VERSION",
+    "OpponentBeliefMix",
+    "OpponentBoardBelief",
+    "InteractiveContinuationResult",
+    "InteractiveSelfPlayEvaluator",
+    "PUCT_VERSION",
+    "PUCTConfig",
+    "PUCTSearchResult",
+    "PUCTTrainingTarget",
+    "StochasticPUCTSearch",
 ]

@@ -1,6 +1,6 @@
 # Super Auto Pets Turtle Pack P1 Guide
 
-Guide version: `turtle-p1-guide-v9-20260902`
+Guide version: `turtle-p1-guide-v12-20260904`
 
 This is the canonical working strategy guide for Turtle Pack P1 versus P1. It
 is a decision document, not a dump of source data. The executable
@@ -107,6 +107,12 @@ high-confidence plan than to choose a plan from an uncommitted board.
   summons/equipment, then Shark/Fly.
 - Positive lethal damage still triggers Hurt before the pet faints. Camel,
   Blowfish, Peacock, and Gorilla therefore activate on a lethal hit.
+- Verified live-game exception: for a post-removal summon Faint, a
+  simultaneously dead intervening pet does not block Tiger.
+  Deer-Wolverine-Tiger therefore repeats Deer when Deer and Wolverine die
+  together. With Deer-Mammoth-Tiger, Mammoth's own Faint is Tiger-repeated and
+  Deer also reaches Tiger after synchronized removal, so both abilities
+  repeat.
 
 ## Global heuristics
 
@@ -157,6 +163,32 @@ turn refresh. Skip the freeze only for a deliberate reason such as abandoning
 that pet, preserving more valuable fresh-shop capacity, or avoiding a badly
 timed combine. With 1-2 gold, freeze the hit first and then roll so the retained
 copy is not lost.
+
+When at least 3 gold remains and a desired pet can simply be bought, freezing
+it first is normally a wasted action. Before turn 7, do not freeze-roll an
+affordable pet merely to preserve it. Important exceptions are:
+
+- delaying a real even-turn level-up so its discover occurs on the following
+  odd turn;
+- turns 5-6 Salad isolation, where keeping the team narrow while preserving a
+  desired pet can protect the random buff targets;
+- turn 7+ full-board plans where no acceptable sell slot exists yet, such as
+  freezing Cow while rolling for a Turtle/Pill sequence that creates space.
+
+These are strategy defaults, not mechanics restrictions. Exhaustive search
+should continue auditing excluded affordable freezes so a real exception can
+be discovered.
+
+### Reposition timing
+
+Ordinary swaps usually do not matter until the shop plan is complete. Defer
+them until zero gold and set the final battle order then. Moving Snail toward
+the back is reasonable, but it need not precede purchases and rolls.
+
+Move earlier when board geometry affects an immediate Sleeping Pill action,
+especially Turtle recipients, Flamingo buff recipients, or placing a fainting
+pet directly ahead of Ox. Other Pill-sensitive Faint interactions such as
+Badger and Hedgehog should likewise be positioned before the Pill is used.
 
 ### Separate copies versus half-combines
 
@@ -433,6 +465,12 @@ Snake may not fire enough when too few friends remain ahead.
 
 ## Turtle Pack reference
 
+All generated pets are gameplay tier 1, even though they are hidden and can
+never be rolled or discovered directly. This includes Bee, Zombie Cricket,
+Dirty Rat, Ram, Bus, Chick, and Zombie Fly. Tier-sensitive battle effects
+therefore treat them as tier 1; in particular, Rhino deals doubled Knock Out
+damage to them.
+
 ### Tier 1
 
 - Ant 2/2: faint, give one random friend +1/+1 per level.
@@ -526,7 +564,8 @@ Snake may not fire enough when too few friends remain ahead.
   Garlic reduces damage by 2 with minimum 2.
 - Tier 4: Pear +2/+2; Canned Food +1/+1 to current/future shop pets; Bread
   gives temporary +7 health.
-- Tier 5: Chili splashes second enemy for 5; Chocolate +1 experience; Sushi
+- Tier 5: Chili splashes second enemy for 5; Chocolate gives +1 experience to
+  a pet below level 3 and cannot target a level-3 pet; Sushi
   buffs three random pets; Scorpion generates Peanut.
 - Tier 6: Melon blocks 20; Mushroom revives as 1/1; Steak adds 20 attack damage
   once; Pizza buffs two random pets +2/+2; Coconut blocks one hit.

@@ -16,12 +16,12 @@ from sapai_gym1.rl.guide_teacher import (
 )
 
 
-class TestTurtleGuideTeacherV5(unittest.TestCase):
+class TestTurtleGuideTeacherV11(unittest.TestCase):
     def setUp(self):
         self.teacher = TurtleGuideTeacher(np.random.default_rng(123))
 
     def test_version_hash_matches_canonical_prose(self):
-        self.assertEqual(GUIDE_VERSION, "turtle-p1-guide-v9-20260902")
+        self.assertEqual(GUIDE_VERSION, "turtle-p1-guide-v12-20260904")
         self.assertTrue(GUIDE_PATH.exists())
         self.assertEqual(
             GUIDE_SHA256,
@@ -56,6 +56,51 @@ class TestTurtleGuideTeacherV5(unittest.TestCase):
         sibling = 1 - preferred
         second_score = self.teacher._score_freeze(player, sibling)
         self.assertLess(second_score, 16.0)
+
+    def test_affordable_freeze_keeps_pacing_and_salad_exceptions(self):
+        player = Player(
+            shop=Shop(["ant"], turn=4),
+            team=Team(["ant", "fish", "beaver", "horse"]),
+            turn=4,
+        )
+        player.gold = 3
+        ordinary = self.teacher._score_freeze(player, 0)
+        self.assertLess(ordinary, 0.0)
+
+        player.team[0].pet.set_total_experience(1)
+        tier_up = self.teacher._score_freeze(player, 0)
+        self.assertGreater(tier_up, ordinary + 10)
+
+        player.turn = 5
+        player.team = Team(["fish", "beaver", "horse"])
+        salad_isolation = self.teacher._score_freeze(player, 0)
+        self.assertGreater(salad_isolation, ordinary)
+
+        player.turn = 7
+        player.team = Team(
+            ["fish", "beaver", "horse", "mosquito", "otter"]
+        )
+        late_full_board = self.teacher._score_freeze(player, 0)
+        self.assertGreater(late_full_board, ordinary)
+
+    def test_move_waits_for_zero_gold_unless_pill_is_available(self):
+        player = Player(
+            shop=Shop(["ant", "apple"], turn=6),
+            team=Team(["fish", "snail"]),
+            turn=6,
+        )
+        player.gold = 3
+        early = self.teacher._score_move(player, 0, 1)
+        player.gold = 0
+        final = self.teacher._score_move(player, 0, 1)
+        self.assertGreater(final, early + 10)
+
+        player.gold = 3
+        player.shop = Shop(
+            ["sleeping-pill", "apple"], turn=6, fixed_rules=True
+        )
+        pill_setup = self.teacher._score_move(player, 0, 1)
+        self.assertEqual(pill_setup, final)
 
     def test_line_plan_persists_after_a_temporary_piece_disappears(self):
         core = SuperAutoPetsEnv(manual_battles=True)

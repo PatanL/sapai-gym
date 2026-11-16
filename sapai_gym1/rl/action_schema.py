@@ -54,6 +54,9 @@ class FlatActionCodec:
 
     @classmethod
     def encode(cls, action: AutoregressiveAction) -> int:
+        from .joint_action import JointAction
+        if isinstance(action, JointAction):
+            raise ValueError('Expand JointAction explicitly before primitive encoding; never drop its mask')
         action_type = ActionType(action.action_type)
         source, target = action.source, action.target
         if action_type is ActionType.END_TURN:

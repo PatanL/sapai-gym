@@ -279,6 +279,8 @@ class TestReplayIngestion(unittest.TestCase):
             "action": np.array([0, 10, 5], dtype=np.int64),
             "battle_outcome": 2,
             "return": np.float32(0),
+            "weight": np.float32(0.25),
+            "initial_memory": np.asarray([1.0, 2.0], dtype=np.float32),
             "replay_id": "a",
         }
         batch = collate_replay_sequences([[item, item], [item]])
@@ -286,6 +288,13 @@ class TestReplayIngestion(unittest.TestCase):
         self.assertEqual(batch["sequence_lengths"].tolist(), [2, 1])
         self.assertEqual(
             batch["valid_mask"].tolist(), [[True, True], [True, False]]
+        )
+        self.assertEqual(
+            batch["example_weights"].tolist(),
+            [[0.25, 0.25], [0.25, 0.0]],
+        )
+        np.testing.assert_array_equal(
+            batch["initial_memories"][0], item["initial_memory"]
         )
 
 

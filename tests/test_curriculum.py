@@ -6,10 +6,14 @@ from sapai_gym1.rl import ActionType, FlatActionCodec
 from sapai_gym1.rl.curriculum import (
     BUILDERS,
     CURRICULUM_VERSION,
+    PUCT_SCENARIO_NAMES,
+    PUCT_SCENARIO_VERSION,
     SCENARIO_NAMES,
+    SEARCH_ONLY_SCENARIO_NAMES,
     generate_curriculum_examples,
     scenario_counts,
 )
+from sapai_gym1.rl.guide_teacher import GUIDE_VERSION
 
 
 class CurriculumTest(unittest.TestCase):
@@ -30,7 +34,7 @@ class CurriculumTest(unittest.TestCase):
             self.assertTrue(example["validation"]["exactSimulatorState"])
             self.assertEqual(
                 example["validation"]["guideVersion"],
-                "turtle-p1-guide-v9-20260902",
+                GUIDE_VERSION,
             )
             self.assertEqual(len(example["validation"]["guideSha256"]), 64)
             self.assertEqual(
@@ -141,6 +145,90 @@ class CurriculumTest(unittest.TestCase):
             [None if slot.empty else slot.pet.name for slot in avoid.agent.team],
             names_before,
         )
+
+    def test_search_only_scenarios_are_versioned_and_have_legal_roots(self):
+        self.assertTrue(PUCT_SCENARIO_VERSION)
+        self.assertEqual(
+            set(PUCT_SCENARIO_NAMES),
+            set(SCENARIO_NAMES) | set(SEARCH_ONLY_SCENARIO_NAMES),
+        )
+        for scenario_index, scenario in enumerate(SEARCH_ONLY_SCENARIO_NAMES):
+            env, actions = BUILDERS[scenario](
+                np.random.default_rng(9000 + scenario_index)
+            )
+            self.assertTrue(actions, scenario)
+            self.assertIn(
+                FlatActionCodec.encode(actions[0]),
+                env._avail_actions(0),
+                scenario,
+            )
+
+    def test_all_puct_manifest_seed_shapes_have_legal_reference_roots(self):
+        for scenario_index, scenario in enumerate(PUCT_SCENARIO_NAMES):
+            for example in range(12):
+                seed = 3605800 + scenario_index * 100_000 + example
+                env, actions = BUILDERS[scenario](
+                    np.random.default_rng(seed)
+                )
+                self.assertTrue(actions, (scenario, seed))
+                self.assertIn(
+                    FlatActionCodec.encode(actions[0]),
+                    env._avail_actions(0),
+                    (scenario, seed),
+                )
+
+    def test_search_only_scenarios_include_both_sides_of_nuanced_rules(self):
+        rng = np.random.default_rng(9010)
+        delay, delay_actions = BUILDERS["search-turn-two-delay-triple"](rng)
+        self.assertEqual(delay_actions[0].action_type, ActionType.ROLL)
+        self.assertTrue(
+            any(
+                action.action_type == ActionType.COMBINE
+                for action in map(FlatActionCodec.decode, delay._avail_actions(0))
+            )
+        )
+
+        space, space_actions = BUILDERS["search-turn-two-triple-for-space"](rng)
+        self.assertEqual(space_actions[0].action_type, ActionType.COMBINE)
+        self.assertEqual(len(space.agent.team), 5)
+
+        preserve, preserve_actions = BUILDERS["search-preserve-active-snails"](rng)
+        self.assertEqual(preserve_actions[0].action_type, ActionType.ROLL)
+        self.assertLess(len(preserve.agent.team), 5)
+
+        combine, combine_actions = BUILDERS["search-combine-snails-for-space"](rng)
+        self.assertEqual(combine_actions[0].action_type, ActionType.COMBINE)
+        self.assertEqual(len(combine.agent.team), 5)
+
+        freeze, freeze_actions = BUILDERS["search-premium-subcost-freeze"](rng)
+        self.assertLess(freeze.agent.gold, 3)
+        self.assertEqual(freeze_actions[0].action_type, ActionType.FREEZE)
+
+        buy, buy_actions = BUILDERS["search-buy-premium-affordable"](rng)
+        self.assertEqual(buy.agent.gold, 3)
+        self.assertEqual(buy_actions[0].action_type, ActionType.BUY_FOOD)
+
+        frozen_food, frozen_food_actions = BUILDERS[
+            "search-buy-frozen-premium"
+        ](rng)
+        self.assertTrue(frozen_food.agent.shop[3].frozen)
+        self.assertEqual(
+            frozen_food_actions[0].action_type, ActionType.BUY_FOOD
+        )
+
+        frozen_pet, frozen_pet_actions = BUILDERS[
+            "search-buy-frozen-match"
+        ](rng)
+        self.assertTrue(frozen_pet.agent.shop[1].frozen)
+        self.assertEqual(
+            frozen_pet_actions[0].action_type, ActionType.BUY_PET
+        )
+
+        held, held_actions = BUILDERS[
+            "search-turn-three-complete-held-triple"
+        ](rng)
+        self.assertEqual(held.agent.turn, 3)
+        self.assertEqual(held_actions[0].action_type, ActionType.COMBINE)
 
 
 if __name__ == "__main__":

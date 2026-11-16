@@ -31,6 +31,8 @@ def behavior_cloning_loss(
     value_cost: float = 0.5,
     action_cost: float = 1.0,
     action_type_weights: torch.Tensor | None = None,
+    example_weights: torch.Tensor | None = None,
+    end_freeze_masks: torch.Tensor | None = None,
 ) -> ImitationLossOutput:
     """Compute masked autoregressive BC plus optional auxiliary targets.
 
@@ -38,9 +40,26 @@ def behavior_cloning_loss(
     targets. ``returns`` may use NaN for unavailable targets.
     """
 
-    output = policy.evaluate_sequence(observations, initial_memory, actions)
+    output = policy.evaluate_sequence(observations, initial_memory, actions,
+        **({'end_freeze_masks':end_freeze_masks} if end_freeze_masks is not None else {}))
     valid = valid_mask.to(output.log_prob.dtype)
     action_weights = valid
+    if example_weights is not None:
+        example_weights = torch.as_tensor(
+            example_weights,
+            device=actions.device,
+            dtype=output.log_prob.dtype,
+        )
+        if example_weights.shape != valid_mask.shape:
+            raise ValueError(
+                "example_weights must have the same [T,B] shape as valid_mask"
+            )
+        if (
+            not torch.all(torch.isfinite(example_weights))
+            or torch.any(example_weights < 0)
+        ):
+            raise ValueError("example_weights must be finite and non-negative")
+        action_weights = action_weights * example_weights
     if action_type_weights is not None:
         type_weights = torch.as_tensor(
             action_type_weights,
@@ -53,7 +72,9 @@ def behavior_cloning_loss(
             raise ValueError("action_type_weights does not cover every action type")
         if not torch.all(torch.isfinite(type_weights)) or torch.any(type_weights <= 0):
             raise ValueError("action_type_weights must be finite and positive")
-        action_weights = valid * type_weights[actions[..., 0].long()]
+        action_weights = (
+            action_weights * type_weights[actions[..., 0].long()]
+        )
     denominator = action_weights.sum().clamp_min(1.0)
     action_loss = -(output.log_prob * action_weights).sum() / denominator
 
@@ -74,10 +95,9 @@ def behavior_cloning_loss(
                 output.board_strength[value_valid], returns[value_valid]
             )
 
-    valid_denominator = valid.sum().clamp_min(1.0)
     mean_expert_probability = (
-        output.log_prob.exp() * valid
-    ).sum() / valid_denominator
+        output.log_prob.exp() * action_weights
+    ).sum() / denominator
     total = (
         action_cost * action_loss
         + battle_cost * battle_loss

@@ -17,6 +17,17 @@ def short_name(name: str) -> str:
     return name.replace("-", " ").title()
 
 
+def numeric_tier(pet) -> int | None:
+    """Return the pet's numeric gameplay tier for diagnostics."""
+
+    try:
+        return int(pet.tier)
+    except (TypeError, ValueError):
+        # Retain compatibility with non-Turtle legacy content whose tier is
+        # still represented by a nonnumeric catalog label.
+        return None
+
+
 def pet_snapshot(pet) -> dict | None:
     if pet.name == "pet-none":
         return None
@@ -29,7 +40,7 @@ def pet_snapshot(pet) -> dict | None:
         "health": int(pet.health),
         "level": int(pet.level),
         "experience": int(pet.experience),
-        "tier": int(pet.tier),
+        "tier": numeric_tier(pet),
         "status": status,
         "statusLabel": short_name(status) if status else None,
         "sellValue": int(pet.sell_value),
@@ -202,7 +213,10 @@ def describe_action(action: dict) -> str:
     if action_type == "COMBINE":
         return f"Combine {source_label} from team {action['source']} into team {action['target']}"
     if action_type == "MOVE":
-        return f"Swap team {action['source']} ({source_label}) with team {action['target']} ({target_label})"
+        return (
+            f"Move {source_label} from team {action['source']} to team {action['target']} "
+            "(shifting intervening pets)"
+        )
     return action_type.replace("_", " ").title()
 
 
@@ -388,6 +402,10 @@ def render_game_html(trace: dict, output: Path) -> None:
     document = _HTML_TEMPLATE.replace("__TITLE__", title).replace(
         "__TRACE_JSON__", payload
     )
+    playback = Path(__file__).with_name('battle_playback.js').read_text()
+    document = document.replace('</body>', '<script>' + playback + '</script></body>')
+    pet_preferences = Path(__file__).with_name('buy_pet_breakdown.js').read_text()
+    document = document.replace('</body>', '<script data-buy-pet-breakdown>' + pet_preferences + '</script></body>')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(document)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,6 +10,10 @@ import numpy as np
 from sapai import Battle, Team
 from .action_schema import AutoregressiveAction, FlatActionCodec
 from .entity_observation import EntityObservationEncoder
+from .identity_remap import (
+    remap_shop_identities as remap_identity_set,
+    remap_team_orders as remap_orders,
+)
 
 
 @dataclass
@@ -24,7 +29,7 @@ class ParallelSelfPlayEnv:
     """Drive both shop phases explicitly instead of hiding an opponent policy."""
 
     def __init__(self, fast_battles: bool = True):
-        from sapai_gym1.SuperAutoPetsEnv import SuperAutoPetsEnv
+        from sapai_gym1 import SuperAutoPetsEnv
 
         self.core = SuperAutoPetsEnv(
             opponent_generator=None,
@@ -37,6 +42,58 @@ class ParallelSelfPlayEnv:
     def reset(self, seed: int | None = None) -> tuple[dict, dict]:
         self.core.reset(seed=seed)
         return self.observations()
+
+    def clone(self):
+        """Clone the exact hidden state for untouched interactive evaluation."""
+
+        cloned = copy.deepcopy(self)
+        cloned.core.agent._connect_objects()
+        cloned.core.opponent._connect_objects()
+
+        cloned.core._freeze_toggled_agent = remap_identity_set(
+            self.core.agent,
+            cloned.core.agent,
+            self.core._freeze_toggled_agent,
+        )
+        cloned.core._freeze_toggled_opponent = remap_identity_set(
+            self.core.opponent,
+            cloned.core.opponent,
+            self.core._freeze_toggled_opponent,
+        )
+        cloned.core._seen_team_orders_agent = remap_orders(
+            self.core.agent,
+            cloned.core.agent,
+            self.core._seen_team_orders_agent,
+        )
+        cloned.core._seen_team_orders_opponent = remap_orders(
+            self.core.opponent,
+            cloned.core.opponent,
+            self.core._seen_team_orders_opponent,
+        )
+        cloned.core._seen_team_orders_agent.add(
+            cloned.core._team_order_key(cloned.core.agent)
+        )
+        cloned.core._seen_team_orders_opponent.add(
+            cloned.core._team_order_key(cloned.core.opponent)
+        )
+        cloned.core._agent_actions_cache = None
+        cloned.core._opponent_actions_cache = None
+        return cloned
+
+    def redeterminize(self, seed):
+        """Resample only future RNG while retaining both current information sets."""
+
+        seeds = np.random.RandomState(int(seed) % (2**32))
+        for player in (self.core.agent, self.core.opponent):
+            random_state = np.random.RandomState(
+                int(seeds.randint(0, 2**32 - 1))
+            )
+            player.shop.rs = random_state
+            player.shop.seed_state = random_state.get_state()
+            player._connect_objects()
+        self.core.rs_random = np.random.RandomState(
+            int(seeds.randint(0, 2**32 - 1))
+        )
 
     def observations(self) -> tuple[dict, dict]:
         return self.encoder.encode(self.core, 0), self.encoder.encode(self.core, 1)

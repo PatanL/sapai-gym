@@ -28,7 +28,8 @@ from .entity_observation import EntityObservationEncoder
 from .guide_teacher import GUIDE_SHA256, GUIDE_VERSION, TEACHER_SHA256
 
 
-CURRICULUM_VERSION = "turtle-p1-scenarios-v3-20260902"
+CURRICULUM_VERSION = "turtle-p1-scenarios-v8-20260904"
+PUCT_SCENARIO_VERSION = "turtle-p1-puct-scenarios-v2-20260904"
 SCENARIO_NAMES = (
     "triple-freeze",
     "avoid-freeze-level-three",
@@ -42,6 +43,26 @@ SCENARIO_NAMES = (
     "elephant-hurt-wolverine",
     "scorpion-vs-tall",
 )
+SEARCH_ONLY_SCENARIO_NAMES = (
+    "search-parrot-deer",
+    "search-tiger-mammoth-mushroom",
+    "search-tiger-mammoth-rhino-counter",
+    "search-deer-summons-rhino-counter",
+    "search-turn-two-delay-triple",
+    "search-turn-two-triple-for-space",
+    "search-avoid-lone-tier-one",
+    "search-avoid-speculative-sell",
+    "search-sell-for-known-upgrade",
+    "search-zero-gold-matching-freeze",
+    "search-preserve-active-snails",
+    "search-combine-snails-for-space",
+    "search-premium-subcost-freeze",
+    "search-buy-premium-affordable",
+    "search-buy-frozen-premium",
+    "search-buy-frozen-match",
+    "search-turn-three-complete-held-triple",
+)
+PUCT_SCENARIO_NAMES = SCENARIO_NAMES + SEARCH_ONLY_SCENARIO_NAMES
 
 FILLER_PETS = (
     "pet-ant",
@@ -388,6 +409,358 @@ def _scorpion_vs_tall(rng):
     ]
 
 
+def _search_parrot_deer(rng):
+    """Expose the Parrot directly behind Deer without prescribing its value."""
+
+    env = _make_env(
+        turn=int(rng.integers(7, 11)),
+        gold=3,
+        team=["pet-deer", None, "pet-ox", "pet-shark", "pet-skunk"],
+        shop=["pet-parrot", "pet-deer", "pet-turtle", "food-pear"],
+        opponent=[
+            ("pet-bison", {"tall": True}),
+            "pet-skunk",
+            "pet-monkey",
+            None,
+            None,
+        ],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.BUY_PET, 0, 1)]
+
+
+def _search_tiger_mammoth_mushroom(rng):
+    """Expose completed Mammoth-ahead-of-Tiger geometry and Mushroom."""
+
+    env = _make_env(
+        turn=int(rng.integers(11, 15)),
+        gold=3,
+        team=[
+            "pet-deer",
+            ("pet-mammoth", {"copies": 3}),
+            "pet-tiger",
+            "pet-skunk",
+            "pet-fly",
+        ],
+        shop=[
+            "food-mushroom",
+            "food-steak",
+            "food-chocolate",
+            "food-melon",
+        ],
+        opponent=[
+            ("pet-hippo", {"tall": True}),
+            "pet-skunk",
+            "pet-monkey",
+            "pet-cow",
+            None,
+        ],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.BUY_FOOD, 0, 1)]
+
+
+def _search_tiger_mammoth_rhino_counter(rng):
+    """Counter-state where Rhino/backline damage may change the combo's value."""
+
+    env = _make_env(
+        turn=int(rng.integers(11, 15)),
+        gold=3,
+        team=[
+            "pet-deer",
+            ("pet-mammoth", {"copies": 3}),
+            "pet-tiger",
+            "pet-skunk",
+            "pet-fly",
+        ],
+        shop=[
+            "food-mushroom",
+            "food-steak",
+            "food-chocolate",
+            "food-melon",
+        ],
+        opponent=[
+            ("pet-rhino", {"tall": True}),
+            "pet-crocodile",
+            "pet-elephant",
+            "pet-blowfish",
+            "pet-leopard",
+        ],
+        rng=rng,
+    )
+    # Metadata-only reference action. Search, not this action, supplies any
+    # training target admitted from the scenario corpus.
+    return env, [AutoregressiveAction(ActionType.ROLL, NO_SOURCE, NO_TARGET)]
+
+
+def _search_deer_summons_rhino_counter(rng):
+    """Expose the Deer/summon decision against a publicly observed Rhino."""
+
+    env = _make_env(
+        turn=int(rng.integers(9, 14)),
+        gold=3,
+        team=["pet-deer", "pet-ox", "pet-shark", "pet-turkey", None],
+        shop=["pet-deer", "pet-fly", "pet-skunk", "food-mushroom"],
+        opponent=[
+            ("pet-rhino", {"tall": True}),
+            "pet-deer",
+            "pet-rooster",
+            "pet-turkey",
+            None,
+        ],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.BUY_PET, 2, 4)]
+
+
+def _search_turn_two_delay_triple(rng):
+    """Expose a turn-two on-board triple with no immediate space pressure."""
+
+    target = str(
+        rng.choice(("pet-ant", "pet-beaver", "pet-cricket", "pet-fish", "pet-otter"))
+    )
+    env = _make_env(
+        turn=2,
+        gold=7,
+        team=[target, "pet-fish", (target, {"copies": 2}), None, None],
+        shop=["pet-mosquito", "pet-horse", "food-apple"],
+        opponent=["pet-ant", "pet-fish", "pet-horse", None, None],
+        rng=rng,
+    )
+    env.agent.lf_winner = True
+    env.agent.last_battle_outcome = 0
+    return env, [
+        AutoregressiveAction(ActionType.ROLL, NO_SOURCE, NO_TARGET)
+    ]
+
+
+def _search_turn_two_triple_for_space(rng):
+    """Counterexample: an early combine can be justified by a full board."""
+
+    target = str(rng.choice(("pet-ant", "pet-beaver", "pet-cricket")))
+    env = _make_env(
+        turn=2,
+        gold=3,
+        team=[
+            target,
+            "pet-fish",
+            (target, {"copies": 2}),
+            "pet-horse",
+            "pet-mosquito",
+        ],
+        shop=["pet-pig", "pet-duck", "pet-otter", "food-apple"],
+        opponent=["pet-ant", "pet-fish", "pet-horse", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.COMBINE, 2, 0)]
+
+
+def _search_avoid_lone_tier_one(rng):
+    """Offer a lone Ant beside materially better turn-three/four bodies."""
+
+    premium = str(rng.choice(("pet-peacock", "pet-swan", "pet-flamingo")))
+    env = _make_env(
+        turn=int(rng.choice((3, 4))),
+        gold=7,
+        team=["pet-fish", "pet-cricket", "pet-otter", None, None],
+        shop=["pet-ant", premium, "pet-pig", "food-apple"],
+        opponent=["pet-fish", "pet-ant", "pet-beaver", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.BUY_PET, 1, 3)]
+
+
+def _search_avoid_speculative_sell(rng):
+    """A flexible board where selling Fish only finances unknown rolls."""
+
+    env = _make_env(
+        turn=int(rng.choice((3, 4))),
+        gold=int(rng.choice((1, 2))),
+        team=["pet-fish", "pet-cricket", "pet-spider", None, "pet-otter"],
+        shop=["pet-rat", "pet-horse", "pet-beaver", "food-meat-bone"],
+        opponent=["pet-fish", "pet-peacock", "pet-flamingo", None, None],
+        rng=rng,
+    )
+    return env, [
+        AutoregressiveAction(ActionType.ROLL, NO_SOURCE, NO_TARGET)
+    ]
+
+
+def _search_sell_for_known_upgrade(rng):
+    """Counterexample: sell a weak unit when it immediately funds a hit."""
+
+    upgrade = str(rng.choice(("pet-peacock", "pet-swan", "pet-flamingo")))
+    env = _make_env(
+        turn=int(rng.choice((3, 4))),
+        gold=2,
+        team=["pet-horse", "pet-fish", "pet-cricket", "pet-spider", "pet-otter"],
+        shop=[upgrade, "pet-rat", "pet-beaver", "food-meat-bone"],
+        opponent=["pet-fish", "pet-peacock", "pet-flamingo", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.SELL, 0, NO_TARGET)]
+
+
+def _search_zero_gold_matching_freeze(rng):
+    """Freeze a useful unfinished on-board match before ending the turn."""
+
+    turn = int(rng.integers(3, 11))
+    target = str(
+        rng.choice(
+            (
+                "pet-fish",
+                "pet-peacock",
+                "pet-swan",
+                "pet-snail",
+                "pet-giraffe",
+                "pet-deer",
+                "pet-penguin",
+            )
+        )
+    )
+    copies = int(rng.choice((1, 2)))
+    env = _make_env(
+        turn=turn,
+        gold=0,
+        team=[(target, {"copies": copies}), "pet-cricket", "pet-otter", None, None],
+        shop=["pet-ant", target, "pet-rat", "food-apple"],
+        opponent=["pet-fish", "pet-peacock", "pet-flamingo", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.FREEZE, 1, NO_TARGET)]
+
+
+def _search_preserve_active_snails(rng):
+    """Keep two active Snails separate while space is still available."""
+
+    env = _make_env(
+        turn=4,
+        gold=5,
+        team=["pet-cricket", "pet-snail", "pet-snail", "pet-otter", None],
+        shop=["pet-hedgehog", "pet-horse", "pet-pig", "food-honey"],
+        opponent=["pet-fish", "pet-peacock", "pet-flamingo", None, None],
+        rng=rng,
+    )
+    env.agent.lf_winner = False
+    env.agent.last_battle_outcome = -1
+    return env, [
+        AutoregressiveAction(ActionType.ROLL, NO_SOURCE, NO_TARGET)
+    ]
+
+
+def _search_combine_snails_for_space(rng):
+    """Counterexample: combine Snails when a concrete buy needs the slot."""
+
+    env = _make_env(
+        turn=4,
+        gold=3,
+        team=["pet-cricket", "pet-snail", "pet-snail", "pet-otter", "pet-fish"],
+        shop=["pet-peacock", "pet-horse", "pet-pig", "food-honey"],
+        opponent=["pet-fish", "pet-peacock", "pet-flamingo", None, None],
+        rng=rng,
+    )
+    env.agent.lf_winner = False
+    env.agent.last_battle_outcome = -1
+    return env, [AutoregressiveAction(ActionType.COMBINE, 2, 1)]
+
+
+def _search_premium_subcost_freeze(rng):
+    """Preserve Chocolate when only rolling/freezing is affordable."""
+
+    turn = int(rng.integers(9, 13))
+    env = _make_env(
+        turn=turn,
+        gold=int(rng.choice((1, 2))),
+        team=[
+            ("pet-rhino", {"copies": 2}),
+            ("pet-cricket", {"copies": 3}),
+            ("pet-otter", {"copies": 5}),
+            "pet-penguin",
+            "pet-snail",
+        ],
+        shop=["pet-armadillo", "pet-deer", "pet-peacock", "food-chocolate", "food-garlic"],
+        opponent=[("pet-hippo", {"tall": True}), "pet-skunk", "pet-monkey", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.FREEZE, 3, NO_TARGET)]
+
+
+def _search_buy_premium_affordable(rng):
+    """Counterexample: buy Chocolate now when the three gold is available."""
+
+    env = _make_env(
+        turn=int(rng.integers(9, 13)),
+        gold=3,
+        team=[
+            ("pet-rhino", {"copies": 2}),
+            ("pet-cricket", {"copies": 3}),
+            ("pet-otter", {"copies": 5}),
+            "pet-penguin",
+            "pet-snail",
+        ],
+        shop=["pet-armadillo", "pet-deer", "pet-peacock", "food-chocolate", "food-garlic"],
+        opponent=[("pet-hippo", {"tall": True}), "pet-skunk", "pet-monkey", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.BUY_FOOD, 3, 0)]
+
+
+def _search_buy_frozen_premium(rng):
+    """Successor state for learning a prior turn's Chocolate freeze value."""
+
+    env, _ = _search_buy_premium_affordable(rng)
+    env.agent.gold = 10
+    env.agent.shop[3].frozen = True
+    env._agent_actions_cache = None
+    return env, [AutoregressiveAction(ActionType.BUY_FOOD, 3, 0)]
+
+
+def _search_buy_frozen_match(rng):
+    """Successor state for learning a prior turn's matching-pet freeze value."""
+
+    turn = int(rng.integers(4, 11))
+    target = str(
+        rng.choice(
+            (
+                "pet-peacock",
+                "pet-swan",
+                "pet-snail",
+                "pet-giraffe",
+                "pet-deer",
+                "pet-penguin",
+            )
+        )
+    )
+    env = _make_env(
+        turn=turn,
+        gold=10,
+        team=[(target, {"copies": 2}), "pet-cricket", "pet-otter", None, None],
+        shop=["pet-ant", target, "pet-rat", "food-apple"],
+        opponent=["pet-fish", "pet-peacock", "pet-flamingo", None, None],
+        rng=rng,
+    )
+    env.agent.shop[1].frozen = True
+    env._agent_actions_cache = None
+    return env, [AutoregressiveAction(ActionType.BUY_PET, 1, 0)]
+
+
+def _search_turn_three_complete_held_triple(rng):
+    """Successor state for cashing the triple deliberately held on turn two."""
+
+    target = str(
+        rng.choice(("pet-ant", "pet-beaver", "pet-cricket", "pet-fish", "pet-otter"))
+    )
+    env = _make_env(
+        turn=3,
+        gold=10,
+        team=[target, "pet-fish", (target, {"copies": 2}), None, None],
+        shop=["pet-mosquito", "pet-horse", "pet-pig", "food-meat-bone"],
+        opponent=["pet-ant", "pet-fish", "pet-horse", None, None],
+        rng=rng,
+    )
+    return env, [AutoregressiveAction(ActionType.COMBINE, 2, 0)]
+
+
 BUILDERS = {
     "triple-freeze": _triple_freeze,
     "avoid-freeze-level-three": _avoid_freeze_level_three,
@@ -400,6 +773,29 @@ BUILDERS = {
     "mushroom-deer-shark": _mushroom_deer_shark,
     "elephant-hurt-wolverine": _elephant_hurt_wolverine,
     "scorpion-vs-tall": _scorpion_vs_tall,
+    "search-parrot-deer": _search_parrot_deer,
+    "search-tiger-mammoth-mushroom": _search_tiger_mammoth_mushroom,
+    "search-tiger-mammoth-rhino-counter": (
+        _search_tiger_mammoth_rhino_counter
+    ),
+    "search-deer-summons-rhino-counter": (
+        _search_deer_summons_rhino_counter
+    ),
+    "search-turn-two-delay-triple": _search_turn_two_delay_triple,
+    "search-turn-two-triple-for-space": _search_turn_two_triple_for_space,
+    "search-avoid-lone-tier-one": _search_avoid_lone_tier_one,
+    "search-avoid-speculative-sell": _search_avoid_speculative_sell,
+    "search-sell-for-known-upgrade": _search_sell_for_known_upgrade,
+    "search-zero-gold-matching-freeze": _search_zero_gold_matching_freeze,
+    "search-preserve-active-snails": _search_preserve_active_snails,
+    "search-combine-snails-for-space": _search_combine_snails_for_space,
+    "search-premium-subcost-freeze": _search_premium_subcost_freeze,
+    "search-buy-premium-affordable": _search_buy_premium_affordable,
+    "search-buy-frozen-premium": _search_buy_frozen_premium,
+    "search-buy-frozen-match": _search_buy_frozen_match,
+    "search-turn-three-complete-held-triple": (
+        _search_turn_three_complete_held_triple
+    ),
 }
 
 

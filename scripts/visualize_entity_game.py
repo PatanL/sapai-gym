@@ -18,9 +18,11 @@ from sapai_gym1.rl import (
     AutoregressiveAction,
     EntityTransformerConfig,
     EntityTransformerPolicy,
+    FlatActionCodec,
     ParallelSelfPlayEnv,
 )
 from sapai_gym1.rl.distributed import _completed_match_result
+from sapai_gym1.rl.end_freeze import expand_end_freeze
 from sapai_gym1.rl.game_trace import (
     action_snapshot,
     audit_state,
@@ -43,6 +45,8 @@ def parse_args():
     parser.add_argument("--trace-json", type=Path)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--perspective", choices=("p0", "p1"), default="p0")
+    parser.add_argument("--player-label", help="Display label for checkpoint in player-zero seat")
+    parser.add_argument("--opponent-label", help="Display label for checkpoint in player-one seat")
     parser.add_argument("--max-decisions", type=int, default=1000)
     return parser.parse_args()
 
@@ -57,12 +61,55 @@ def load_policy(path: Path):
 
 
 @torch.inference_mode()
+def buy_pet_source_probabilities(policy, features, output):
+    """P(shop slot | BUY_PET) and its action-type marginal, before acting.
+
+    Decode the existing features only: never advance the GRU or sample an action.
+    Slots remain distinct even when they contain the same species.
+    """
+    kind = int(ActionType.BUY_PET)
+    observation = features.observation
+    if observation['type_mask'].shape[0] != 1:
+        raise ValueError('Viewer source diagnostics expect one decision')
+    if not bool(observation['type_mask'][0, kind]):
+        return {'schema': 'buy-pet-sources-v1', 'available': False,
+                'typeProbability': 0.0, 'sources': []}
+    sources = torch.nonzero(observation['source_mask'][0, kind], as_tuple=False).flatten()
+    if not len(sources):
+        raise ValueError('Legal BUY_PET has no legal shop source')
+    decoded = output
+    if int(output.actions[0, 0]) != kind:
+        source = int(sources[0])
+        targets = torch.nonzero(observation['target_mask'][0, kind, source], as_tuple=False).flatten()
+        if not len(targets):
+            raise ValueError('Legal pet source has no legal destination')
+        joint = bool(getattr(policy.config, 'end_freeze', False))
+        decoded = policy.decode_decision(
+            features, torch.tensor([[kind, source, int(targets[0])]], device=features.context.device),
+            deterministic=True, allow_end_freeze=joint,
+            end_freeze_masks=torch.zeros(1, dtype=torch.long, device=features.context.device) if joint else None,
+        )
+    probabilities = torch.softmax(decoded.source_logits[0], dim=-1)
+    type_probability = torch.softmax(output.type_logits[0], dim=-1)[kind]
+    if not torch.isfinite(probabilities).all() or not torch.isclose(probabilities[sources].sum(), probabilities.new_tensor(1.0)):
+        raise ValueError('Invalid conditional pet-source distribution')
+    return {'schema': 'buy-pet-sources-v1', 'available': True,
+            'typeProbability': float(type_probability.cpu()),
+            'sources': [{'source': int(source),
+                         'conditionalProbability': float(probabilities[source].cpu()),
+                         'overallProbability': float((type_probability * probabilities[source]).cpu())}
+                        for source in sources]}
+
+
+@torch.inference_mode()
 def policy_action(policy, observation, memory):
     batch = {
         key: torch.as_tensor(value, device="cpu").unsqueeze(0)
         for key, value in observation.items()
     }
-    output = policy(batch, memory=memory, deterministic=True)
+    features = policy.encode_decision(batch, memory)
+    output = policy.decode_decision(features, deterministic=True,
+                    allow_end_freeze=bool(getattr(policy.config, 'end_freeze', False)))
     action = AutoregressiveAction(*map(int, output.actions[0].cpu()))
     type_probabilities = torch.softmax(output.type_logits[0], dim=-1).cpu()
     battle_probabilities = torch.softmax(output.battle_logits[0], dim=-1).cpu()
@@ -92,8 +139,42 @@ def policy_action(policy, observation, memory):
             "draw": float(battle_probabilities[2]),
         },
         "typeProbabilities": type_rows,
+        "endFreezeMask": None if output.end_freeze_mask is None else int(output.end_freeze_mask[0].cpu()),
+        "buyPetSources": buy_pet_source_probabilities(policy, features, output),
     }
     return action, output.memory, diagnostics
+
+
+def record_end_freeze_prefixes(env, actions, masks, viewer_side, turn, action_number, action_counts):
+    """Expand a joint choice into visible clicks without re-running the GRU."""
+    plans = []
+    for side, (action, mask) in enumerate(zip(actions, masks)):
+        if mask is not None and action is not None and action.action_type == ActionType.END_TURN:
+            plans.append(expand_end_freeze(env.core, side, mask)[:-1])
+        elif mask:
+            raise ValueError('Non-END action cannot contain a freeze subset')
+        else:
+            plans.append(())
+    frames = []
+    for side, plan in enumerate(plans):
+        for action in plan:
+            before = view_snapshot(env.core, viewer_side) if side == viewer_side else None
+            snapshot = action_snapshot(env.core.agent if side == 0 else env.core.opponent, action)
+            env.core.resolve_action(side, FlatActionCodec.encode(action))
+            action_counts[side][ActionType(action.action_type).name] += 1
+            if side != viewer_side:
+                continue
+            after = view_snapshot(env.core, viewer_side)
+            action_number += 1
+            frames.append({
+                'turn': turn, 'phase': 'shop',
+                'label': f'Action {action_number}: ' + snapshot['type'].replace('_', ' ').title(),
+                'subtitle': 'Part of the sampled end-of-shop freeze plan; no extra policy decision',
+                'before': before, 'after': after, 'action': snapshot,
+                'changes': state_changes(before, after), 'warnings': audit_state(snapshot, before, after),
+                'policy': None, 'jointEndFreezeMask': masks[side],
+            })
+    return frames, action_number
 
 
 def end_turn_snapshot(raw_player_state: dict, before_view: dict) -> dict:
@@ -125,7 +206,7 @@ def battle_result_label(result: int, viewer_side: int, labels: list[str]) -> str
     )
 
 
-def main():
+def main(battle_records=None):
     args = parse_args()
     torch.set_num_threads(max(1, args.threads))
     torch.set_num_interop_threads(1)
@@ -136,8 +217,8 @@ def main():
     policies = [entry[0] for entry in policies_and_checkpoints]
     checkpoints = [entry[1] for entry in policies_and_checkpoints]
     labels = [
-        f"P0 update {checkpoints[0].get('update')}",
-        f"P1 update {checkpoints[1].get('update')}",
+        args.player_label or f"P0 update {checkpoints[0].get('update')}",
+        args.opponent_label or f"P1 update {checkpoints[1].get('update')}",
     ]
     viewer_side = 0 if args.perspective == "p0" else 1
 
@@ -195,6 +276,14 @@ def main():
                     selected[side],
                 )
 
+        masks = [None if entry is None else entry.get('endFreezeMask') for entry in diagnostics]
+        if any(mask for mask in masks):
+            prefix_frames, turn_action_number = record_end_freeze_prefixes(
+                env, selected, masks, viewer_side, current_turn, turn_action_number, action_counts
+            )
+            frames.extend(prefix_frames)
+            visible_before = view_snapshot(env.core, viewer_side)
+            visible_raw_state = (env.core.agent.state if viewer_side == 0 else env.core.opponent.state)
         step = env.step(selected[0], selected[1])
         observations = step.observations
 
@@ -281,6 +370,7 @@ def main():
                 "warnings": [],
                 "policy": None,
                 "battle": {
+                    "playback": battle_records[-1] if battle_records else None,
                     "viewerTeam": team_snapshot(viewer_team),
                     "opponentTeam": team_snapshot(opponent_team),
                     "result": int(step.battle_result),
@@ -346,4 +436,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from sapai_gym1.rl.battle_replay import capture_battle_playback
+    with capture_battle_playback() as battle_records:
+        main(battle_records)

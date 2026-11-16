@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--state", type=Path)
     parser.add_argument("--match-id", default="arena-live")
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--backend", choices=('cpu', 'mps'), default='cpu')
     parser.add_argument("--navigate-from-main", action="store_true")
     parser.add_argument("--new-arena", action="store_true")
     parser.add_argument("--loop", action="store_true")
@@ -144,7 +145,7 @@ def main():
     else:
         state = LiveGameState.from_dict(json.loads(args.state.read_text()))
 
-    engine = LivePolicyEngine(args.checkpoint, threads=args.threads)
+    engine = LivePolicyEngine(args.checkpoint, threads=args.threads, backend=args.backend)
     if args.loop:
         controller = AutonomousArenaController(
             dashboard=dashboard,
@@ -176,6 +177,8 @@ def main():
         print(json.dumps(result, indent=2))
         return
     recommendation = engine.recommend(state, match_id=args.match_id)
+    if args.armed and len(recommendation.primitive_plan) > 1:
+        raise SystemExit('Joint freeze plans require the verified autonomous controller, not one-shot clicking')
     gesture = DesktopActionMapper().gesture(
         recommendation.action, state=state
     )

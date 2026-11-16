@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument("state", type=Path)
     parser.add_argument("--match-id")
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--backend", choices=('cpu', 'mps'), default='cpu')
     parser.add_argument("--dashboard", default="http://127.0.0.1:8770/agent")
     parser.add_argument("--no-post", action="store_true")
     parser.add_argument("--plan", action="store_true")
@@ -28,7 +29,7 @@ def parse_args():
 def main():
     args = parse_args()
     state = LiveGameState.from_dict(json.loads(args.state.read_text()))
-    engine = LivePolicyEngine(args.checkpoint, threads=args.threads)
+    engine = LivePolicyEngine(args.checkpoint, threads=args.threads, backend=args.backend)
     if args.plan:
         plan = engine.plan_until_barrier(
             state, max_actions=args.max_actions

@@ -88,6 +88,80 @@ class TestCurrentEnvironment(unittest.TestCase):
         self.assertEqual(actions[fish_to_team_one][1:], (1, 1))
         self.assertEqual(actions[apple_for_team_zero][1:], (2, 0))
 
+    def test_chocolate_cannot_target_a_level_three_pet(self):
+        self.env.agent = Player(
+            shop=Shop(["chocolate"], turn=9),
+            team=Team(["fish", "crab"]),
+            turn=9,
+            gold=3,
+            record_actions=False,
+        )
+        self.env.agent.team[0].pet.set_total_experience(5)
+        self.env.agent.team[1].pet.set_total_experience(4)
+        self.env.shop_agent = self.env.agent.shop
+        self.env.team_agent = self.env.agent.team
+        self.env.turn = 9
+        self.env._agent_actions_cache = None
+
+        level_three = FlatActionCodec.encode(
+            AutoregressiveAction(ActionType.BUY_FOOD, 0, 0)
+        )
+        level_two = FlatActionCodec.encode(
+            AutoregressiveAction(ActionType.BUY_FOOD, 0, 1)
+        )
+        actions = self.env._avail_actions(0)
+        self.assertNotIn(level_three, actions)
+        self.assertIn(level_two, actions)
+
+        observation = EntityObservationEncoder().encode(self.env, 0)
+        self.assertFalse(
+            observation["target_mask"][ActionType.BUY_FOOD, 0, 0]
+        )
+        self.assertTrue(
+            observation["target_mask"][ActionType.BUY_FOOD, 0, 1]
+        )
+
+    def test_second_chocolate_target_disappears_after_reaching_level_three(self):
+        self.env.agent = Player(
+            shop=Shop(["chocolate", "chocolate"], turn=9),
+            team=Team(["fish"]),
+            turn=9,
+            gold=6,
+            record_actions=False,
+        )
+        self.env.agent.team[0].pet.set_total_experience(4)
+        self.env.shop_agent = self.env.agent.shop
+        self.env.team_agent = self.env.agent.team
+        self.env.turn = 9
+        self.env._agent_actions_cache = None
+
+        first = FlatActionCodec.encode(
+            AutoregressiveAction(ActionType.BUY_FOOD, 0, 0)
+        )
+        self.assertIn(first, self.env._avail_actions(0))
+        self.env.resolve_action(0, first)
+        self.assertEqual(self.env.agent.team[0].pet.level, 3)
+
+        remaining_chocolate_slots = [
+            index
+            for index, slot in enumerate(self.env.agent.shop)
+            if slot.slot_type == "food"
+            and slot.obj.name == "food-chocolate"
+        ]
+        self.assertEqual(len(remaining_chocolate_slots), 1)
+        second = FlatActionCodec.encode(
+            AutoregressiveAction(
+                ActionType.BUY_FOOD, remaining_chocolate_slots[0], 0
+            )
+        )
+        self.assertNotIn(second, self.env._avail_actions(0))
+        observation = EntityObservationEncoder().encode(self.env, 0)
+        self.assertFalse(
+            observation["target_mask"][
+                ActionType.BUY_FOOD, remaining_chocolate_slots[0], 0
+            ]
+        )
+
     def test_legal_action_cache_reuses_state_and_invalidates_after_action(self):
         self.env.agent.gold = 1
         self.env._agent_actions_cache = None

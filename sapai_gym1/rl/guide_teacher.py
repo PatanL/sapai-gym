@@ -16,7 +16,7 @@ from .action_schema import (
 )
 
 
-GUIDE_VERSION = "turtle-p1-guide-v9-20260902"
+GUIDE_VERSION = "turtle-p1-guide-v12-20260904"
 GUIDE_PATH = Path(__file__).resolve().parents[2] / "TURTLE_P1_GUIDE.md"
 GUIDE_SHA256 = hashlib.sha256(GUIDE_PATH.read_bytes()).hexdigest()
 TEACHER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -904,6 +904,17 @@ class TurtleGuideTeacher:
                 # turn. It must beat both a low-gold roll and zero-gold end;
                 # buying remains preferred whenever the copy is affordable.
                 return 36.0 + value if slot.cost > player.gold else 4.0 + value
+            if slot.cost <= player.gold:
+                team_size = len(player.team)
+                salad_isolation = (
+                    player.turn in {5, 6} and team_size <= 3
+                )
+                late_full_board_hold = (
+                    player.turn >= 7 and team_size == 5
+                )
+                if salad_isolation or late_full_board_hold:
+                    return 2.0 + value
+                return -12.0
         same_name = any(
             not team_slot.empty and team_slot.pet.name == slot.obj.name
             for team_slot in player.team
@@ -933,7 +944,16 @@ class TurtleGuideTeacher:
         composition_improvement = self._composition_value(
             simulated, line_name, counters
         ) - self._composition_value(player.team, line_name, counters)
-        return -6.0 + 3.0 * improvement + composition_improvement
+        pill_available = any(
+            not slot.empty
+            and slot.obj.name == "food-sleeping-pill"
+            and slot.cost <= player.gold
+            for slot in player.shop
+        )
+        timing_penalty = -6.0
+        if player.gold > 0 and not pill_available:
+            timing_penalty = -20.0
+        return timing_penalty + 3.0 * improvement + composition_improvement
 
     def _item_value(
         self, player, name, plan=None, known_opponent=None

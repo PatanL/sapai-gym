@@ -774,7 +774,10 @@ class SuperAutoPetsEnv(gym.Env):
             else:
                 # Handle targeted foods (like Apple)
                 for team_idx, team_slot in enumerate(player.team):
-                    if not team_slot.empty:
+                    if (
+                        not team_slot.empty
+                        and team_slot.pet.can_eat(shop_slot.obj)
+                    ):
                         action_num = FlatActionCodec.encode(
                             AutoregressiveAction(
                                 ActionType.BUY_FOOD, shop_idx, team_idx

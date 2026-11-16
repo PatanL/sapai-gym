@@ -29,6 +29,24 @@ class LeagueManager:
             raise ValueError(f"Duplicate league member {member.member_id}")
         self.members[member.member_id] = member
 
+    def promote(self, member_id: str, checkpoint: str, created_step: int = 0):
+        """Make a validated checkpoint a permanently resident champion."""
+
+        if member_id in self.members:
+            member = self.members[member_id]
+            member.checkpoint = str(checkpoint)
+            member.role = "champion"
+            member.created_step = int(created_step)
+            return member
+        member = LeagueMember(
+            member_id,
+            str(checkpoint),
+            role="champion",
+            created_step=int(created_step),
+        )
+        self.add(member)
+        return member
+
     def record_result(self, player_id: str, opponent_id: str, outcome: int):
         """Record outcome from player perspective: win=1, draw=0, loss=-1."""
 
@@ -70,20 +88,21 @@ class LeagueManager:
         return candidates[int(rng.choice(len(candidates), p=priorities))]
 
     def resident_members(self, max_historical: int = 4) -> list[LeagueMember]:
-        """Keep every fixed exploiter and only cap rolling history.
+        """Keep every fixed exploiter/champion and only cap rolling history.
 
-        Exploiters are permanent best-response anchors. Historical snapshots
-        are the only resident role that should age out as the main policy
-        creates newer checkpoints.
+        Exploiters are permanent best-response anchors and champions are
+        checkpoints that passed an external promotion gate. Historical
+        snapshots are the only resident role that should age out as the main
+        policy creates newer checkpoints.
         """
 
         if max_historical < 0:
             raise ValueError("max_historical must be non-negative")
-        exploiters = sorted(
+        permanent = sorted(
             (
                 member
                 for member in self.members.values()
-                if member.role == "exploiter"
+                if member.role in {"exploiter", "champion"}
             ),
             key=lambda member: (member.created_step, member.member_id),
         )
@@ -96,7 +115,7 @@ class LeagueManager:
             key=lambda member: (member.created_step, member.member_id),
         )
         historical = historical[-max_historical:] if max_historical else []
-        return exploiters + historical
+        return permanent + historical
 
     def save(self, path: str | Path):
         payload = {
@@ -106,7 +125,10 @@ class LeagueManager:
                 for (player, opponent), outcomes in self.results.items()
             },
         }
-        Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+        path = Path(path)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        temporary.replace(path)
 
     @classmethod
     def load(cls, path: str | Path) -> "LeagueManager":

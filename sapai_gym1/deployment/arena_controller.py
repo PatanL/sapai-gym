@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -433,7 +433,7 @@ class AutonomousArenaController:
         self.env.agent._connect_objects()
         self.env._agent_actions_cache = None
 
-    def step_shop(self):
+    def step_shop(self, *, _prepared=None):
         pre_action_state = self._state()
         frame, _, before = self._stable_shop_observation(
             expected_state=pre_action_state
@@ -443,10 +443,8 @@ class AutonomousArenaController:
         before_corrections = self.reconcile_observed_stats(before)
         current = self._state(frame, confidence=before.confidence)
         memory_before = self.engine.snapshot_memory()
-        recommendation = self.engine.recommend_environment(
-            self.env,
-            match_id=self.match_id,
-            state_confidence=before.confidence,
+        recommendation = _prepared or self.engine.recommend_environment(
+            self.env, match_id=self.match_id, state_confidence=before.confidence,
         )
         action = recommendation.action
         action_type = ActionType(action.action_type)
@@ -462,6 +460,26 @@ class AutonomousArenaController:
         )
         if not self.armed:
             return {**payload, "executed": False}
+
+        if _prepared is None:
+            self.engine.validate_recommendation(recommendation, self.env)
+            if len(recommendation.primitive_plan) > 1:
+                # Each toggle is re-observed/verified by the existing primitive
+                # executor. All are ONE neural decision; no intermediate GRU
+                # advancement. A mismatch abandons the remaining plan.
+                try:
+                    for primitive in recommendation.primitive_plan:
+                        part = replace(recommendation, action=primitive,
+                                       action_type=ActionType(primitive.action_type).name,
+                                       source=primitive.source, target=primitive.target,
+                                       primitive_plan=(primitive,))
+                        result = self.step_shop(_prepared=part)
+                    return result
+                except Exception:
+                    self.engine.restore_memory(memory_before)
+                    raise
+        if FlatActionCodec.encode(action) not in self.env._avail_actions(0):
+            raise PerceptionError('Prepared primitive is no longer legal')
 
         self.dashboard.execute_gesture(gesture)
         if action_type is ActionType.BUY_FOOD:
@@ -494,6 +512,9 @@ class AutonomousArenaController:
         )
         self.actions += 1
         if action_type is ActionType.END_TURN:
+            # A delivered click isn't yet a confirmed transition. Commit only
+            # when battle/name/result UI proves that we left the shop.
+            self._pending_end_recommendation = recommendation
             self._publish(
                 status="waiting-for-battle",
                 recommendation=recommendation.to_dict(),
@@ -570,9 +591,17 @@ class AutonomousArenaController:
             after_corrections = self.reconcile_observed_stats(after)
             expected = self._state(after_frame, confidence=after.confidence)
             self.observer.verify_identities(after, expected)
+            if action_type in (ActionType.FREEZE, ActionType.UNFREEZE):
+                observed_flags = tuple(x.frozen for x in (*after.pets, *after.foods))
+                expected_flags = tuple(slot.frozen for kind in ('pet', 'food') for slot in expected.shop
+                                       if (slot.kind in {'pet', 'levelup'}) == (kind == 'pet'))
+                if observed_flags != expected_flags:
+                    raise PerceptionError('Freeze toggle was not visually confirmed')
         except Exception:
             self.engine.restore_memory(memory_before)
             raise
+        if _prepared is None:
+            self.engine.commit_recommendation(recommendation, confirmed=True)
         self._publish(
             status="executed-and-verified",
             recommendation=recommendation.to_dict(),
@@ -586,6 +615,13 @@ class AutonomousArenaController:
         )
         return {"executed": True, "endTurn": False}
 
+    def _commit_end_if_observed(self, phase):
+        if phase in {'battle', 'name', 'result', 'gameover'}:
+            pending = getattr(self, '_pending_end_recommendation', None)
+            if pending is not None:
+                self.engine.commit_recommendation(pending, confirmed=True)
+                self._pending_end_recommendation = None
+
     def _battle_to_next_shop(self, frame_before):
         before_scalars = self.observer.scalar_fingerprints(frame_before)
         deadline = time.monotonic() + self.config.battle_wait
@@ -598,6 +634,7 @@ class AutonomousArenaController:
         while time.monotonic() < deadline:
             frame = self.dashboard.frame()
             phase = self.observer.phase(frame)
+            self._commit_end_if_observed(phase)
             self.last_frame = frame
             self._publish(
                 status=f"battle-transition-{phase}",

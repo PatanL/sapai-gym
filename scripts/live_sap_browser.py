@@ -237,6 +237,8 @@ def parse_args():
     parser.add_argument("--height", type=int, default=CANONICAL_CANVAS.height)
     parser.add_argument("--fps", type=float, default=2.0)
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--cdp-port", type=int, default=0,
+                        help="Optional loopback-only Playwright/CDP control port; disabled by default.")
     parser.add_argument(
         "--record-video",
         type=Path,
@@ -320,6 +322,8 @@ def main():
     args = parse_args()
     if args.fps <= 0:
         raise SystemExit("--fps must be positive")
+    if not 0 <= args.cdp_port <= 65535:
+        raise SystemExit("--cdp-port must be 0 (disabled) or a valid TCP port")
     args.profile_dir.mkdir(parents=True, exist_ok=True)
     try:
         from playwright.sync_api import (
@@ -354,6 +358,9 @@ def main():
         "--disable-dev-shm-usage",
         "--autoplay-policy=no-user-gesture-required",
     ]
+    if args.cdp_port:
+        launch_args += [f"--remote-debugging-port={args.cdp_port}",
+                        "--remote-debugging-address=127.0.0.1"]
     video_temp_dir = None
     if args.record_video is not None:
         args.record_video.parent.mkdir(parents=True, exist_ok=True)

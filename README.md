@@ -1,5 +1,9 @@
 # Super Auto Pets Gym
 
+The [research and model release guide](research/README.md) describes the latest
+update-25,772 checkpoint, the November positioning experiments, frozen runtime
+dependencies, download instructions, and known mechanics/continuation limits.
+
 `sapai-gym` provides an [OpenAI Gym](https://github.com/openai/gym) environment for [Super Auto Pets](https://teamwoodgames.com/).
 This Gym environments provide a standard interface to train reinforcement learning (RL) models for Super Auto Pets and
 is compatible with any tools that accept Gym interfaces, including [Stable Baselines3](https://github.com/DLR-RM/stable-baselines3).
@@ -89,4 +93,3 @@ opponent when simulating Super Auto Pets in a controlled environment is interest
 In order to allow flexibility in `sapai-gym`, an opponent generator is passed into the environment, which the environment
 uses to generate the opponents the agent will play. The simplest form of an opponent generator simply returns a static set of teams,
 which are the same every game. More complicated opponent generators could generate teams like a smart opponent would.
-
